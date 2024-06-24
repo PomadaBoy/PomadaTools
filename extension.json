@@ -1,0 +1,14 @@
+{
+    "builtin": "False",
+    "default_enabled": "True",
+    "type": "extension",
+    "rocket_mode_compatible": "False",
+    "name": "PomadaBoy",
+    "description": "Extensions for PyRevit from PomadeBoy",
+    "author": "Slobodan Vesovic",
+    "author_profile": "https://github.com/PomadaBoy",
+    "url": "https://github.com/PomadaBoy/PomadaTools.git",
+    "website": "",
+    "image": "",
+    "dependencies": []
+}
