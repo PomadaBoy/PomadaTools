@@ -281,4 +281,3 @@ if failed:
     out.print_md("### ❌ Failed ({})".format(len(failed)))
     for msg in failed:
         out.print_md("- {}".format(msg))
-```
