@@ -1,0 +1,3 @@
+title: "Remove Parameters\nfrom CSV"
+tooltip: Deletes every parameter listed in a Parameter Audit CSV. Export with Parameter Audit, delete the rows you want to keep, then pick the file. A warning window lists all parameters (red = still has values) before anything is deleted.
+author: Slobodan Vesovic

@@ -1,0 +1,3 @@
+title: "Open WIP\nFolder"
+tooltip: Opens the WIP panel folder in Explorer. Put new work-in-progress scripts here as <Name>.pushbutton folders, then reload pyRevit.
+author: Slobodan Vesovic

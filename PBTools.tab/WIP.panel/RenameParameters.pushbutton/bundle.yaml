@@ -1,0 +1,3 @@
+title: "Rename\nParameters"
+tooltip: Renames several parameters at once - family parameters in a family document, global parameters in a project. Tick them, build new names with Find/Replace, Prefix and Suffix or type them, check the list, then rename. Project and shared parameters are shown but locked (Revit API cannot rename them).
+author: Slobodan Vesovic

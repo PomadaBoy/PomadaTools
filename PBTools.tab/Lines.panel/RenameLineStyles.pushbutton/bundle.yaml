@@ -1,0 +1,3 @@
+title: Rename Line Styles
+tooltip: Lists all line styles, then renames the ones you enter (old names list -> new names list). Revit API cannot rename line styles, so each is recreated, lines are moved to it, and the old one is deleted.
+author: Slobodan Vesovic

@@ -1,0 +1,3 @@
+title: Lines to Plane
+tooltip: Copies selected 2D lines (e.g. exploded DWG in a section) onto a planar face or reference plane in a 3D view as model lines, using an insertion point on each side.
+author: Slobodan Vesovic
