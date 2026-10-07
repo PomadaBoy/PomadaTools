@@ -83,7 +83,6 @@ if pattern_id is None:
         exitscript=True
     )
 
-out.print_md("**Pattern found:** `{}` (Id: {})".format(TARGET_PATTERN_NAME, pattern_id))
 
 # - STEP 3: BUILD OverrideGraphicSettings -
 
@@ -114,17 +113,11 @@ with Transaction(doc, "pyRevit - Override Graphic Settings") as t:
 
 # - STEP 5: REPORT -
 
-out.print_md("## Override Graphic Settings - Results")
-out.print_md("**View:** {}".format(view.Name))
-out.print_md("**Pattern:** {}".format(TARGET_PATTERN_NAME))
-out.print_md("**Color:** R{} G{} B{}".format(
-    OVERRIDE_COLOR.Red, OVERRIDE_COLOR.Green, OVERRIDE_COLOR.Blue))
-out.print_md("---")
-out.print_md("### Success ({})".format(len(success)))
-for eid in success:
-    out.print_md("- ElementId `{}`".format(eid))
 
 if failed:
-    out.print_md("### Failed ({})".format(len(failed)))
+    out.print_md("## ... ERRORS")
+    out.print_md("**View:** {}".format(view.Name))
+    out.print_md("---")
+    out.print_md("### Failed ({} of {} elements)".format(len(failed), len(elements)))
     for msg in failed:
         out.print_md("- {}".format(msg))

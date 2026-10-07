@@ -77,8 +77,6 @@ with forms.WarningBar(title="Select Walls"):
         if el_cat_name == "Walls":
             walls_list.append(element)
     
-    print("Number of disjoined walls: {0}".format(len(walls_list)))
- 
 
     
 t = Transaction(doc,__title__)  
@@ -95,9 +93,5 @@ for wall in walls_list:
 t.Commit()  # <- Transaction End
 
 
-print('-' * 50)
-print('Script is finished.')
-    
-    
-    
+
  

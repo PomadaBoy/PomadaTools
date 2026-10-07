@@ -86,7 +86,6 @@ if cut_fg_pattern_id is None:
         exitscript=True
     )
 
-out.print_md("**Pattern found:** `{}` (Id: {})".format(TARGET_PATTERN_NAME, cut_fg_pattern_id))
 
 # - STEP 3: BUILD OverrideGraphicSettings -
 
@@ -116,20 +115,10 @@ with Transaction(doc, "pyRevit - Override Cut Pattern Settings") as t:
 
 # - STEP 5: REPORT -
 
-out.print_md("## Override Cut Graphic Settings - Results")
-out.print_md("**View:** {}".format(view.Name))
-out.print_md("**Surface Transparency:** {}%".format(SURFACE_TRANSPARENCY))
-out.print_md("**Cut Foreground Pattern:** {}".format(TARGET_PATTERN_NAME))
-out.print_md("**Cut Foreground Color:** R{} G{} B{}".format(
-    CUT_FG_PATTERN_COLOR.Red,
-    CUT_FG_PATTERN_COLOR.Green,
-    CUT_FG_PATTERN_COLOR.Blue))
-out.print_md("---")
-out.print_md("### Success ({})".format(len(success)))
-for eid in success:
-    out.print_md("- ElementId `{}`".format(eid))
-
 if failed:
-    out.print_md("### Failed ({})".format(len(failed)))
+    out.print_md("## ... ERRORS")
+    out.print_md("**View:** {}".format(view.Name))
+    out.print_md("---")
+    out.print_md("### Failed ({} of {} elements)".format(len(failed), len(elements)))
     for msg in failed:
         out.print_md("- {}".format(msg))

@@ -95,9 +95,6 @@ for wall in walls_list:
 t.Commit()  # <- Transaction End
 
 
-print('-' * 50)
-print('Script is finished.')
-    
     
     
  

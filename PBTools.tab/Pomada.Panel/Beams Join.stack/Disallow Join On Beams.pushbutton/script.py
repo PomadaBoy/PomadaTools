@@ -77,9 +77,7 @@ with forms.WarningBar(title="Select Beams"):
         
         if el_cat_name == "Structural Framing":
             beams_list.append(element)
-    
-    print("Number of disjoined Beams: {0}".format(len(beams_list)))
- 
+     
 
     
 t = Transaction(doc,__title__)  
@@ -95,9 +93,6 @@ for beam in beams_list:
 
 t.Commit()  # <- Transaction End
 
-
-print('-' * 50)
-print('Script is finished.')
     
     
     
