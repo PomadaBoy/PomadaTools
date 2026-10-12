@@ -1,0 +1,3 @@
+title: "Pipe from\nLines"
+tooltip: Select connected model lines (single route) and create a pipe run along them. Asks for pipe type, system, diameter, level and flex pipe type, checks every corner against standard PVC bend angles (15/30/45/67.5/87.5) and suggests snapping, flex pipe or keeping the angle before building.
+author: Slobodan Vesovic
