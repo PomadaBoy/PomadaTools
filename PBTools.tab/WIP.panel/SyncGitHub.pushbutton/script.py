@@ -14,7 +14,7 @@ output = script.get_output()
 
 
 def norm(path):
-    return os.path.normcase(os.path.normpath(path)).rstrip("\/")
+    return os.path.normcase(os.path.normpath(path)).rstrip("\\/")
 
 
 ext_dir = norm(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
