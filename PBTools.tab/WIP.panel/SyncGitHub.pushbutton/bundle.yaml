@@ -1,0 +1,3 @@
+title: "Sync\nGitHub"
+tooltip: Downloads the latest PomadaTools from GitHub and reloads pyRevit. Use this instead of pyRevit Update when Update says "No internet access detected" (the company network blocks pyRevit's internet test, not GitHub).
+author: Slobodan Vesovic
