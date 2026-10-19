@@ -9,8 +9,15 @@ from ctypes import wintypes
 
 import clr
 clr.AddReference("System")
+clr.AddReference("PresentationCore")
+clr.AddReference("PresentationFramework")
+clr.AddReference("WindowsBase")
 from System.Collections.Generic import List
 from System.Diagnostics import Process
+from System.Reflection import BindingFlags
+from System.Windows import PresentationSource
+from System.Windows.Controls import TextBlock, TreeView, TreeViewItem, VirtualizingStackPanel
+from System.Windows.Media import VisualTreeHelper
 
 from pyrevit import revit, forms, script
 from Autodesk.Revit.DB import Element, ElementId, ElementType, FamilySymbol
@@ -120,16 +127,22 @@ def revit_windows():
     return tops
 
 
-def find_tree_views():
-    trees, todo, seen = [], revit_windows(), set()
+def find_tree_views(diag):
+    trees, todo, seen, tree_like = [], revit_windows(), set(), set()
     while todo:
         h = todo.pop()
         if h in seen:
             continue
         seen.add(h)
-        if class_name(h) == "SysTreeView32":
+        cls = class_name(h)
+        if cls == "SysTreeView32":
             trees.append(h)
+        elif "tree" in cls.lower():
+            tree_like.add(cls)
         todo.extend(child_windows(h))
+    diag.append("Win32 windows searched: {}".format(len(seen)))
+    if tree_like:
+        diag.append("Other tree-like window classes: " + ", ".join(sorted(tree_like)))
     return trees
 
 
@@ -148,15 +161,18 @@ def find_families_root(trees, diag):
     return None, None
 
 
-def select_in_browser(path):
-    """Returns (ok, error text, names available where the search stopped, tree diagnostics)."""
-    diag = []
-    trees = find_tree_views()
+def select_in_win32_tree(path, diag):
+    """Returns (ok, error text, names available where the search stopped)."""
+    trees = find_tree_views(diag)
+    diag.append("Win32 tree controls: {}".format(len(trees)))
     if not trees:
-        return False, "No tree control found in the Revit window.", [], diag
-    tree, node = find_families_root(trees, diag)
+        return False, "No Win32 tree control found.", []
+    roots = []
+    tree, node = find_families_root(trees, roots)
+    for names in roots:
+        diag.append("Win32 tree top items: " + (", ".join(names) or "(empty)"))
     if node is None:
-        return False, "Could not find the 'Families' folder in the Project Browser.", [], diag
+        return False, "Could not find the 'Families' folder in the Win32 tree.", []
     walked = [tv_text(tree, node)]
     for name in path:
         tv_expand(tree, node)
@@ -164,13 +180,195 @@ def select_in_browser(path):
         match = [k for k in kids if tv_text(tree, k) == name]
         if not match:
             return False, "Could not find '{}' under '{}'.".format(name, " > ".join(walked)), \
-                [tv_text(tree, k) for k in kids], diag
+                [tv_text(tree, k) for k in kids]
         node = match[0]
         walked.append(name)
     user32.SetFocus(ctypes.c_void_p(tree))
     tv_select(tree, node)
     send(tree, TVM_ENSUREVISIBLE, 0, ctypes.c_void_p(node))
-    return True, "", [], diag
+    return True, "", []
+
+
+# ---------------- WPF tree view (Project Browser drawn by WPF, reached directly in-process) ----------------
+
+ANY_MEMBER = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance
+TEXT_PROPERTIES = ("Name", "Text", "Header", "DisplayName", "Title", "Label", "Caption")
+
+
+def visual_children(v):
+    try:
+        return [VisualTreeHelper.GetChild(v, i) for i in range(VisualTreeHelper.GetChildrenCount(v))]
+    except Exception:
+        return []
+
+
+def wpf_roots():
+    roots = []
+    for src in PresentationSource.CurrentSources:
+        try:
+            if src.RootVisual is not None:
+                roots.append(src.RootVisual)
+        except Exception:
+            pass
+    return roots
+
+
+def find_wpf_trees(diag):
+    trees, tree_like = [], set()
+    todo = wpf_roots()
+    diag.append("WPF windows: {}".format(len(todo)))
+    while todo:
+        v = todo.pop()
+        if isinstance(v, TreeView):
+            trees.append(v)
+        else:
+            tname = v.GetType().Name
+            if "tree" in tname.lower():
+                tree_like.add(v.GetType().FullName)
+        todo.extend(visual_children(v))
+    diag.append("WPF TreeViews: {}".format(len(trees)))
+    if tree_like:
+        diag.append("Other tree-like WPF controls: " + ", ".join(sorted(tree_like)))
+    return trees
+
+
+def header_text(tvi):
+    """First TextBlock text in the item's own header (not in its children)."""
+    start = None
+    try:
+        start = tvi.Template.FindName("PART_Header", tvi)
+    except Exception:
+        pass
+    todo = [start or tvi]
+    while todo:
+        v = todo.pop(0)
+        if isinstance(v, TextBlock) and (v.Text or "").strip():
+            return v.Text.strip()
+        for c in visual_children(v):
+            if not isinstance(c, TreeViewItem):
+                todo.append(c)
+    return ""
+
+
+def data_text(item):
+    """Text of a data item behind a tree row, read from common property names."""
+    if isinstance(item, str):
+        return item.strip()
+    for prop_name in TEXT_PROPERTIES:
+        try:
+            prop = item.GetType().GetProperty(prop_name, ANY_MEMBER)
+            if prop is not None:
+                val = prop.GetValue(item, None)
+                if val is not None and str(val).strip():
+                    return str(val).strip()
+        except Exception:
+            pass
+    try:
+        return str(item).strip()
+    except Exception:
+        return ""
+
+
+def wpf_items(parent):
+    """[(text, container or None, index)] for the rows directly under a TreeView/TreeViewItem."""
+    rows = []
+    gen = parent.ItemContainerGenerator
+    for i in range(parent.Items.Count):
+        item = parent.Items[i]
+        cont = item if isinstance(item, TreeViewItem) else gen.ContainerFromIndex(i)
+        text = header_text(cont) if cont is not None else ""
+        rows.append((text or data_text(item), cont, i))
+    return rows
+
+
+def wpf_container(parent, index):
+    """Container for a row that is virtualized (not built yet): scroll it into existence."""
+    cont = parent.ItemContainerGenerator.ContainerFromIndex(index)
+    if cont is not None:
+        return cont
+    parent.UpdateLayout()
+    todo = visual_children(parent)
+    while todo:
+        v = todo.pop(0)
+        if isinstance(v, VirtualizingStackPanel):
+            try:
+                v.BringIndexIntoViewPublic(index)
+            except Exception:
+                pass
+            break
+        if not isinstance(v, TreeViewItem):
+            todo.extend(visual_children(v))
+    parent.UpdateLayout()
+    return parent.ItemContainerGenerator.ContainerFromIndex(index)
+
+
+def wpf_child(parent, name):
+    if isinstance(parent, TreeViewItem) and not parent.IsExpanded:
+        parent.IsExpanded = True
+    parent.UpdateLayout()
+    rows = wpf_items(parent)
+    for text, cont, i in rows:
+        if text == name:
+            return cont or wpf_container(parent, i), rows
+    return None, rows
+
+
+def select_in_wpf_tree(path, diag):
+    trees = find_wpf_trees(diag)
+    if not trees:
+        return False, "No WPF TreeView found.", []
+    node = None
+    for tree in trees:
+        tops = wpf_items(tree)
+        diag.append("WPF tree top items: " + (", ".join(t for t, _, _ in tops[:10]) or "(empty)"))
+        for root_name in FAMILIES_ROOT_NAMES:
+            node, _ = wpf_child(tree, root_name)
+            if node is not None:
+                break
+        if node is None:                  # one root per document in some setups
+            for _, cont, i in tops:
+                cont = cont or wpf_container(tree, i)
+                if cont is None:
+                    continue
+                for root_name in FAMILIES_ROOT_NAMES:
+                    node, _ = wpf_child(cont, root_name)
+                    if node is not None:
+                        break
+                if node is not None:
+                    break
+        if node is not None:
+            break
+    if node is None:
+        return False, "Could not find the 'Families' folder in the WPF tree.", []
+    walked = [header_text(node) or "Families"]
+    for name in path:
+        child, rows = wpf_child(node, name)
+        if child is None:
+            return False, "Could not find '{}' under '{}'.".format(name, " > ".join(walked)), \
+                [t for t, _, _ in rows]
+        node = child
+        walked.append(name)
+    node.IsSelected = True
+    node.BringIntoView()
+    node.Focus()
+    return True, "", []
+
+
+def select_in_browser(path):
+    """Try the WPF tree first, then a classic Win32 tree. Returns (ok, error, available, diagnostics)."""
+    diag = []
+    errors = []
+    available = []
+    for method in (select_in_wpf_tree, select_in_win32_tree):
+        try:
+            ok, error, avail = method(path, diag)
+        except Exception as ex:
+            ok, error, avail = False, "{} failed: {}".format(method.__name__, ex), []
+        if ok:
+            return True, "", [], diag
+        errors.append(error)
+        available = available or avail
+    return False, " / ".join(errors), available, diag
 
 
 # ---------------- main ----------------
@@ -223,8 +421,9 @@ def main():
     output.print_md("**Problem:** {}".format(error))
     if available:
         output.print_md("**Items found at that level:** " + ", ".join(available))
-    for i, names in enumerate(diag):
-        output.print_md("**Tree {} top items:** {}".format(i + 1, ", ".join(names) or "(empty)"))
+    output.print_md("**Diagnostics:**")
+    for line in diag:
+        output.print_md("- " + line)
     output.print_md("The type was selected directly instead - see the Properties palette.")
 
 
