@@ -16,6 +16,7 @@ from Autodesk.Revit.UI import ExternalEvent, IExternalEventHandler
 
 doc = revit.doc
 uidoc = revit.uidoc
+UIAPP = __revit__  # noqa: F821  (UIApplication provided by pyRevit)
 logger = script.get_logger()
 
 ZOOM_MARGIN = 0.25     # extra space around the zoomed element (fraction of its size)
@@ -169,8 +170,15 @@ class GMListWindow(forms.WPFWindow):
     def run_in_revit(self, func):
         self.action.func = func
         request = self.event.Raise()
-        if str(request) != "Accepted":
-            self.set_status("Revit did not accept the request ({}). Try clicking again.".format(request))
+        if str(request) == "Accepted":
+            return
+        # Revit refused the external event: run directly instead (works for selection/zoom in practice)
+        self.action.func = None
+        try:
+            func(UIAPP)
+            self.set_status(self.status_tb.Text + "  [direct, request was {}]".format(request))
+        except Exception as ex:
+            self.set_status("Revit refused the request ({}) and direct call failed: {}".format(request, ex))
 
     # ---- clicking rows ----
     def list_changed(self, sender, args):
