@@ -14,6 +14,8 @@ from Autodesk.Revit.DB import (BuiltInCategory, Element, ElementId, FamilyInstan
                                FilteredElementCollector, View3D, XYZ)
 from Autodesk.Revit.UI import ExternalEvent, IExternalEventHandler
 
+from pomadagm import RenameWindow, apply_rename
+
 doc = revit.doc
 uidoc = revit.uidoc
 UIAPP = __revit__  # noqa: F821  (UIApplication provided by pyRevit)
@@ -41,9 +43,13 @@ XAML = """
                 Margin="14,0,0,0" DockPanel.Dock="Left" Click="search_changed"/>
       <Button Content="Close" Width="80" DockPanel.Dock="Right" Click="close_click"/>
       <Button Content="Refresh" Width="80" Margin="0,0,8,0" DockPanel.Dock="Right" Click="refresh_click"/>
+      <Button x:Name="rename_btn" Content="Rename..." Width="90" Margin="0,0,8,0" DockPanel.Dock="Right"
+              Click="rename_click" IsEnabled="False"
+              ToolTip="Rename the family and type of the selected row (or double-click a row)"/>
     </DockPanel>
     <TextBlock x:Name="status_tb" DockPanel.Dock="Bottom" Foreground="#2B4C8C" TextWrapping="Wrap" Margin="0,6,0,0"/>
-    <ListView x:Name="list_lv" SelectionMode="Extended" SelectionChanged="list_changed">
+    <ListView x:Name="list_lv" SelectionMode="Extended" SelectionChanged="list_changed"
+              MouseDoubleClick="rename_click">
       <ListView.View>
         <GridView>
           <GridViewColumn Header="Family" Width="220" DisplayMemberBinding="{Binding family}"/>
@@ -183,6 +189,7 @@ class GMListWindow(forms.WPFWindow):
     # ---- clicking rows ----
     def list_changed(self, sender, args):
         ids = [r.element_id for r in self.list_lv.SelectedItems]
+        self.rename_btn.IsEnabled = len(ids) == 1
         if not ids:
             return
         zoom = bool(self.zoom_cb.IsChecked)
@@ -203,6 +210,52 @@ class GMListWindow(forms.WPFWindow):
             win.set_status("Selected {} element(s).".format(ui_doc.Selection.GetElementIds().Count))
 
         self.run_in_revit(select)
+
+    # ---- rename ----
+    def rename_click(self, sender, args):
+        rows = list(self.list_lv.SelectedItems)
+        if len(rows) != 1:
+            self.set_status("Select exactly one row to rename.")
+            return
+        element_id = rows[0].element_id
+        win = self
+
+        def rename(uiapp):
+            ui_doc = uiapp.ActiveUIDocument
+            if ui_doc is None or not ui_doc.Document.Equals(doc):
+                win.set_status("The list belongs to '{}'. Switch back to that model.".format(doc.Title))
+                return
+            elem = doc.GetElement(element_id)
+            if not isinstance(elem, FamilyInstance):
+                win.set_status("This Generic Model is not a family (e.g. a DirectShape) - it has no family name.")
+                return
+            symbol = elem.Symbol
+            family = symbol.Family
+            dlg = RenameWindow(doc, family, symbol, show_skip=False)
+            dlg.ShowDialog()
+            if not dlg.result or dlg.result[0] != "rename":
+                win.set_status("")
+                return
+            changed = apply_rename(doc, family, symbol, dlg.result[1], dlg.result[2])
+            if not changed:
+                win.set_status("Names unchanged.")
+                return
+            win.reload_rows(ui_doc, keep_id=element_id)
+            win.set_status(u"Renamed {} / {}  →  {} / {}".format(*changed))
+
+        self.run_in_revit(rename)
+
+    def reload_rows(self, ui_doc, keep_id=None):
+        """Re-read all rows (names of every instance of the renamed family change) and keep the selection."""
+        view = ui_doc.ActiveView if isinstance(ui_doc.ActiveView, View3D) else None
+        self.all_rows = collect_rows(doc, view)
+        self.apply_filter()
+        if keep_id is not None:
+            for r in self.list_lv.ItemsSource:
+                if r.element_id == keep_id:
+                    self.list_lv.SelectedItem = r
+                    self.list_lv.ScrollIntoView(r)
+                    break
 
     # ---- buttons ----
     def refresh_click(self, sender, args):
