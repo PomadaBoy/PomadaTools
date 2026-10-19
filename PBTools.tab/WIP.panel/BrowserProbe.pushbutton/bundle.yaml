@@ -1,0 +1,3 @@
+title: "Browser\nProbe"
+tooltip: Temporary diagnostic for Find in Browser. After OK, hover the mouse over a family name in the Project Browser for 3 seconds; it reports what Windows sees there.
+author: Slobodan Vesovic
