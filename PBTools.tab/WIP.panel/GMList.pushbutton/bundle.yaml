@@ -1,0 +1,3 @@
+title: "GM\nList"
+tooltip: Window listing all Generic Models in the model, with search. Click a row (Ctrl/Shift for several) to select the element and zoom to it in the active 3D view. The window stays open while you work.
+author: Slobodan Vesovic
