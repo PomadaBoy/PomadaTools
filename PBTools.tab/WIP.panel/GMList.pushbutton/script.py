@@ -9,7 +9,7 @@ import clr
 clr.AddReference("System")
 from System.Collections.Generic import List
 
-from pyrevit import revit, forms, script
+from pyrevit import revit, forms, script, EXEC_PARAMS
 from Autodesk.Revit.DB import (BuiltInCategory, Element, ElementId, FamilyInstance,
                                FilteredElementCollector, View3D, XYZ)
 from Autodesk.Revit.UI import ExternalEvent, IExternalEventHandler
@@ -41,7 +41,7 @@ XAML = """
       <Button Content="Close" Width="80" DockPanel.Dock="Right" Click="close_click"/>
       <Button Content="Refresh" Width="80" Margin="0,0,8,0" DockPanel.Dock="Right" Click="refresh_click"/>
     </DockPanel>
-    <TextBlock x:Name="status_tb" DockPanel.Dock="Bottom" Foreground="#C0392B" TextWrapping="Wrap"/>
+    <TextBlock x:Name="status_tb" DockPanel.Dock="Bottom" Foreground="#2B4C8C" TextWrapping="Wrap" Margin="0,6,0,0"/>
     <ListView x:Name="list_lv" SelectionMode="Extended" SelectionChanged="list_changed">
       <ListView.View>
         <GridView>
@@ -119,8 +119,12 @@ def zoom_to(ui_doc, ids):
 
 class RevitAction(IExternalEventHandler):
     """Runs a function inside Revit's API context (needed because the window is modeless)."""
+    # IronPython needs a unique .NET namespace per run for classes implementing Revit interfaces
+    __namespace__ = EXEC_PARAMS.exec_id
+
     def __init__(self):
         self.func = None
+        self.report = None      # callback(text) to show errors in the window
 
     def Execute(self, uiapp):
         func, self.func = self.func, None
@@ -129,6 +133,8 @@ class RevitAction(IExternalEventHandler):
         try:
             func(uiapp)
         except Exception as ex:
+            if self.report:
+                self.report("Error: {}".format(ex))
             logger.error("GM List: {}".format(ex))
 
     def GetName(self):
@@ -140,6 +146,7 @@ class GMListWindow(forms.WPFWindow):
         forms.WPFWindow.__init__(self, XAML, literal_string=True)
         self.all_rows = rows
         self.action = RevitAction()
+        self.action.report = self.set_status
         self.event = ExternalEvent.Create(self.action)
         self.apply_filter()
         self.search_tb.Focus()
@@ -156,9 +163,14 @@ class GMListWindow(forms.WPFWindow):
     def search_changed(self, sender, args):
         self.apply_filter()
 
+    def set_status(self, text):
+        self.status_tb.Text = text
+
     def run_in_revit(self, func):
         self.action.func = func
-        self.event.Raise()
+        request = self.event.Raise()
+        if str(request) != "Accepted":
+            self.set_status("Revit did not accept the request ({}). Try clicking again.".format(request))
 
     # ---- clicking rows ----
     def list_changed(self, sender, args):
@@ -167,19 +179,20 @@ class GMListWindow(forms.WPFWindow):
             return
         zoom = bool(self.zoom_cb.IsChecked)
         win = self
+        self.set_status("Selecting {} element(s)...".format(len(ids)))
 
         def select(uiapp):
             ui_doc = uiapp.ActiveUIDocument
             if ui_doc is None or not ui_doc.Document.Equals(doc):
-                win.status_tb.Text = "The list belongs to '{}'. Switch back to that model.".format(doc.Title)
+                win.set_status("The list belongs to '{}'. Switch back to that model.".format(doc.Title))
                 return
             ui_doc.Selection.SetElementIds(List[ElementId](ids))
             if not isinstance(ui_doc.ActiveView, View3D):
-                win.status_tb.Text = "Selected - open a 3D view to zoom to it."
+                win.set_status("Selected {} - open a 3D view to zoom to it.".format(len(ids)))
                 return
-            win.status_tb.Text = ""
             if zoom:
                 zoom_to(ui_doc, ids)
+            win.set_status("Selected {} element(s).".format(ui_doc.Selection.GetElementIds().Count))
 
         self.run_in_revit(select)
 
