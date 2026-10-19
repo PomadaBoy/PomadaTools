@@ -1,0 +1,3 @@
+title: "Rename\nGM"
+tooltip: Click a Generic Model and rename its family and type in a small window. Checks for duplicate names and characters Revit does not allow. Keeps asking for the next one until Esc or Done.
+author: Slobodan Vesovic
