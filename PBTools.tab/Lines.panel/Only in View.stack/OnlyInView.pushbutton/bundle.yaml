@@ -1,0 +1,3 @@
+title: Only in View
+tooltip: Select model lines - they stay visible only in the active view (usually 3D) and are hidden element by element in all other views. Lines with the same line style are not affected.
+author: Slobodan Vesovic
