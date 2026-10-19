@@ -1,0 +1,7 @@
+title: Overrides
+tooltip: Override Graphics, Transparency and Reset Graphic Overrides.
+author: Slobodan Vesovic
+layout:
+    - Override Graphics
+    - Transparency
+    - Reset Graphic Overrides
