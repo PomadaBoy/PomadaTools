@@ -1,0 +1,3 @@
+title: "Levels\nfrom DWG"
+tooltip: In a section / elevation with an imported DWG section - click the level lines, then Finish. Creates levels named '<prefix> <elevation>' (e.g. 'OK Fundament +3.250') with preview, prefix reuse, optional height correction, level type and optional floor / structural plans. One Undo step.
+author: Slobodan Vesovic
