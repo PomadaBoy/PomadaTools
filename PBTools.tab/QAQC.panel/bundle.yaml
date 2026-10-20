@@ -2,5 +2,6 @@ layout:
     - QAQCSection
     - ToggleAbzug
     - OutlineCheck
+    - SectionCheck
     - GMList
     - RenameGM

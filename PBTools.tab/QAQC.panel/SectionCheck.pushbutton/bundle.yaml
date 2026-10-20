@@ -1,0 +1,3 @@
+title: "Section\nCheck"
+tooltip: Run in a section (e.g. a QAQC section) where you placed a DWG on the element. Compares the element as seen in the section with closed DWG outlines both ways and creates 'QAQC Outline Check - <section>' - green OK, yellow check, red deviates, purple duplicate, orange no DWG - with markers and a table.
+author: Slobodan Vesovic
