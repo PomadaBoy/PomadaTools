@@ -1,0 +1,3 @@
+title: "Level\nfrom Pick"
+tooltip: Click a horizontal face, an edge / line or a point on an element - a level is created at that height (exact for horizontal faces and edges). Then optionally creates a floor or structural plan on it. One Undo step.
+author: Slobodan Vesovic
