@@ -1,0 +1,3 @@
+title: "Outline\nCheck"
+tooltip: Compare the plan outline of selected elements (e.g. Generic Model extrusions) with a DWG. Creates a QAQC view - green matches within tolerance, red deviates, orange has no DWG lines nearby - and a table with the max deviation per element.
+author: Slobodan Vesovic
