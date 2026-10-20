@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""PomadaTools startup: give the PBTools ribbon tab its own KeyTip (press Alt, then P B)."""
+"""PomadaTools startup: give the PBTools ribbon tab its own KeyTip (press Alt, then B)."""
 
 import clr
 clr.AddReference("AdWindows")
@@ -11,7 +11,7 @@ from Autodesk.Windows import ComponentManager
 from pyrevit.coreutils.logger import get_logger
 
 TAB_TITLE = "PBTools"
-KEYTIP = "PB"
+KEYTIP = "B"
 
 logger = get_logger(__name__)
 
