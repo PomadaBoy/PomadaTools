@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 __title__ = "Reference\nFaces"
 __doc__ = """Place two points with Revit's adaptive placement (you see the points, all snaps work, also on DWGs
-in 3D). You can place several pairs, Esc to finish. For every pair a Generic Model is created with:
-- a vertical plate whose face lies exactly in the vertical plane through both points,
-- a horizontal plate whose top face is exactly at the height of the points.
+in 3D). You can place several pairs, Esc to finish. For every pair a Generic Model is created with two
+surfaces without thickness:
+- a vertical surface exactly in the vertical plane through both points,
+- a surface through the line point 1 -> point 2, perpendicular to the vertical one (it tilts with the line).
 Use the faces for Set Work Plane, dimensions or Align. First run builds the small adaptive family
 'PB Reference Points' from Revit's adaptive template. Works in Revit 2023 and 2025."""
 
@@ -16,11 +17,12 @@ from System.Collections.Generic import List
 
 from pyrevit import revit, forms, script
 from Autodesk.Revit.DB import (AdaptiveComponentFamilyUtils, AdaptiveComponentInstanceUtils, AdaptivePointType,
-                               BuiltInCategory, BuiltInParameter, Color, Curve, CurveLoop, DirectShape,
-                               DirectShapeReferencingOption, ElementId, Family, FamilyInstance,
-                               FilteredElementCollector, GeometryCreationUtilities, GeometryObject, Line, Material,
-                               ReferencePointArray, SaveAsOptions, SolidOptions, Transaction, UnitTypeId,
-                               UnitUtils, XYZ)
+                               BuiltInCategory, BuiltInParameter, Color, DirectShape, DirectShapeReferencingOption,
+                               ElementId, Family, FamilyInstance, FilteredElementCollector, GeometryObject,
+                               Material, ReferencePointArray, SaveAsOptions, TessellatedFace,
+                               TessellatedShapeBuilder, TessellatedShapeBuilderFallback,
+                               TessellatedShapeBuilderOutcome, TessellatedShapeBuilderTarget, Transaction,
+                               UnitTypeId, UnitUtils, XYZ)
 from Autodesk.Revit.Exceptions import OperationCanceledException
 
 doc = revit.doc
@@ -28,11 +30,9 @@ uidoc = revit.uidoc
 app = doc.Application
 config = script.get_config()
 
-THICKNESS_MM = 10.0       # plate thickness (the reference face is exactly on the picked plane)
-OVERHANG_MM = 500.0       # plates extend this far beyond the two points
-HEIGHT_MM = 1000.0        # vertical plate reaches this far above and below the points
-WIDTH_MM = 1000.0         # horizontal plate reaches this far to both sides of the vertical plate
-SAME_HEIGHT_MM = 1.0
+OVERHANG_MM = 500.0       # surfaces extend this far beyond the two points
+HEIGHT_MM = 1000.0        # vertical surface reaches this far above and below the points
+WIDTH_MM = 1000.0         # the surface along the line reaches this far to both sides of the vertical one
 MATERIAL_NAME = "PB Reference Faces"
 LABEL = "PB Reference Faces"
 FAMILY_NAME = "PB Reference Points"
@@ -127,17 +127,7 @@ def instances_of(symbol):
                if i.Symbol.Id == symbol.Id)
 
 
-# ---------------- reference plates ----------------
-
-def rectangle(corners):
-    pts = list(corners) + [corners[0]]
-    return CurveLoop.Create(List[Curve]([Line.CreateBound(a, b) for a, b in zip(pts[:-1], pts[1:])]))
-
-
-def plate(corners, direction, thickness, options):
-    loops = List[CurveLoop]([rectangle(corners)])
-    return GeometryCreationUtilities.CreateExtrusionGeometry(loops, direction, thickness, options)
-
+# ---------------- reference surfaces (no thickness) ----------------
 
 def helper_material():
     for m in FilteredElementCollector(doc).OfClass(Material):
@@ -150,41 +140,52 @@ def helper_material():
     return mid
 
 
-def horizontal_height(a, b, number):
-    if abs(a.Z - b.Z) <= mm(SAME_HEIGHT_MM):
-        return a.Z
-    choice = forms.CommandSwitchWindow.show(
-        ["Height of point 1", "Height of point 2", "In the middle"],
-        message="Pair {}: the points are at different heights. Where should the horizontal face be?".format(number))
-    if choice is None:
-        return None
-    return {"Height of point 1": a.Z, "Height of point 2": b.Z}.get(choice, (a.Z + b.Z) / 2.0)
+def sheet(corners, material_id):
+    """One flat face without thickness (an open 'sheet'). Returns (geometry objects, outcome)."""
+    builder = TessellatedShapeBuilder()
+    builder.OpenConnectedFaceSet(False)
+    builder.AddFace(TessellatedFace(List[XYZ](corners), material_id))
+    builder.CloseConnectedFaceSet()
+    builder.Target = TessellatedShapeBuilderTarget.AnyGeometry
+    builder.Fallback = TessellatedShapeBuilderFallback.Mesh
+    builder.Build()
+    result = builder.GetBuildResult()
+    return list(result.GetGeometricalObjects()), result.Outcome
 
 
-def create_plates(a, b, zh, material_id):
-    d = XYZ(b.X - a.X, b.Y - a.Y, 0)
-    length = d.GetLength()
-    d = d.Normalize()
-    n = XYZ.BasisZ.CrossProduct(d).Normalize()      # horizontal, perpendicular to the vertical plate
-    t, over, w = mm(THICKNESS_MM), mm(OVERHANG_MM), mm(WIDTH_MM)
-    z0 = min(a.Z, b.Z, zh) - mm(HEIGHT_MM)
-    z1 = max(a.Z, b.Z, zh) + mm(HEIGHT_MM)
+def create_surfaces(a, b, material_id):
+    """Vertical surface through a and b + surface through the line a-b perpendicular to it.
+    Returns (DirectShape, True if both are real faces and not just meshes)."""
+    line = b - a
+    d = XYZ(line.X, line.Y, 0).Normalize()           # horizontal direction of the line
+    n = XYZ.BasisZ.CrossProduct(d).Normalize()       # normal of the vertical surface (horizontal)
+    u = line.Normalize()                             # direction of the line itself (may slope)
+    over, w, h = mm(OVERHANG_MM), mm(WIDTH_MM), mm(HEIGHT_MM)
+    length_h = XYZ(line.X, line.Y, 0).GetLength()
+    length = line.GetLength()
     base = XYZ(a.X, a.Y, 0)
+    z0, z1 = min(a.Z, b.Z) - h, max(a.Z, b.Z) + h
 
-    def at(s, z, side=0.0):
-        return base + d * s + n * side + XYZ.BasisZ * z
+    def vert(s, z):
+        return base + d * s + XYZ.BasisZ * z
 
-    options = SolidOptions(material_id, ElementId.InvalidElementId)
-    # vertical plate: face exactly in the plane through both points, thickness towards +n
-    vertical = plate([at(-over, z0), at(length + over, z0), at(length + over, z1), at(-over, z1)], n, t, options)
-    # horizontal plate: top face exactly at zh, thickness downwards
-    horizontal = plate([at(-over, zh, -w), at(length + over, zh, -w), at(length + over, zh, w),
-                        at(-over, zh, w)], XYZ.BasisZ.Negate(), t, options)
+    def along(s, side):
+        return a + u * s + n * side
+
+    vertical = [vert(-over, z0), vert(length_h + over, z0), vert(length_h + over, z1), vert(-over, z1)]
+    # contains the line (u) and the vertical surface's normal (n): perpendicular to the vertical surface
+    on_line = [along(-over, -w), along(length + over, -w), along(length + over, w), along(-over, w)]
+
+    shapes, faces_ok = [], True
+    for corners in (vertical, on_line):
+        objs, outcome = sheet(corners, material_id)
+        shapes.extend(objs)
+        faces_ok = faces_ok and outcome != TessellatedShapeBuilderOutcome.Mesh
 
     ds = DirectShape.CreateElement(doc, ElementId(BuiltInCategory.OST_GenericModel))
     ds.ApplicationId = "PomadaTools"
     ds.ApplicationDataId = "ReferenceFaces"
-    ds.SetShape(List[GeometryObject]([vertical, horizontal]))
+    ds.SetShape(List[GeometryObject](shapes))
     opts = ds.GetOptions()
     opts.ReferencingOption = DirectShapeReferencingOption.Referenceable
     ds.SetOptions(opts)
@@ -195,7 +196,7 @@ def create_plates(a, b, zh, material_id):
     p = ds.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)
     if p is not None and not p.IsReadOnly:
         p.Set(LABEL)
-    return ds
+    return ds, faces_ok
 
 
 # ---------------- main ----------------
@@ -220,25 +221,20 @@ def main():
         return
     placed = [doc.GetElement(ElementId(i)) for i in sorted(new_ids)]
 
-    pairs, skipped = [], 0
-    for k, inst in enumerate(placed):
-        ref_ids = AdaptiveComponentInstanceUtils.GetInstancePlacementPointElementRefIds(inst)
-        pts = [doc.GetElement(i).Position for i in ref_ids]
-        if len(pts) < 2 or XYZ(pts[1].X - pts[0].X, pts[1].Y - pts[0].Y, 0).GetLength() < mm(1):
-            skipped += 1                    # points vertically above each other: no vertical plane
-            pairs.append((inst, None, None, None))
-            continue
-        zh = horizontal_height(pts[0], pts[1], k + 1)
-        pairs.append((inst, pts[0], pts[1], zh))
-
-    created = []
+    created, skipped, meshes = [], 0, 0
     t = Transaction(doc, "Reference Faces")
     t.Start()
     try:
         material_id = helper_material()
-        for inst, a, b, zh in pairs:
-            if a is not None and zh is not None:
-                created.append(create_plates(a, b, zh, material_id))
+        for inst in placed:
+            ref_ids = AdaptiveComponentInstanceUtils.GetInstancePlacementPointElementRefIds(inst)
+            pts = [doc.GetElement(i).Position for i in ref_ids]
+            if len(pts) >= 2 and XYZ(pts[1].X - pts[0].X, pts[1].Y - pts[0].Y, 0).GetLength() >= mm(1):
+                ds, faces_ok = create_surfaces(pts[0], pts[1], material_id)
+                created.append(ds)
+                meshes += 0 if faces_ok else 1
+            else:
+                skipped += 1                # points vertically above each other: no vertical plane
             doc.Delete(inst.Id)             # the adaptive helper was only used to place the points
         t.Commit()
     except Exception as ex:
@@ -248,9 +244,15 @@ def main():
 
     if created:
         uidoc.Selection.SetElementIds(List[ElementId]([ds.Id for ds in created]))
+    notes = []
     if skipped:
-        forms.alert("{} pair(s) skipped: the two points were vertically above each other, so they do not "
-                    "define a vertical plane.".format(skipped), title=TITLE)
+        notes.append("{} pair(s) skipped: the two points were vertically above each other, so they do not "
+                     "define a vertical plane.".format(skipped))
+    if meshes:
+        notes.append("{} element(s) could only be built as a mesh - their surfaces may not be pickable as "
+                     "work planes.".format(meshes))
+    if notes:
+        forms.alert("\n\n".join(notes), title=TITLE)
 
 
 main()

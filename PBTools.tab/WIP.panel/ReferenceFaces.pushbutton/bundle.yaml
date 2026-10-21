@@ -1,3 +1,3 @@
 title: "Reference\nFaces"
-tooltip: Place two points with Revit adaptive placement (visible points, all snaps incl. DWG in 3D) - several pairs, Esc to finish. Each pair becomes a Generic Model with a vertical plate exactly through both points and a horizontal plate at their height, for Set Work Plane, dimensions or Align.
+tooltip: Place two points with Revit adaptive placement (visible points, all snaps incl. DWG in 3D) - several pairs, Esc to finish. Each pair becomes a Generic Model with two surfaces without thickness - a vertical one exactly through both points and one through the line point 1 to point 2, perpendicular to it - for Set Work Plane, dimensions or Align.
 author: Slobodan Vesovic
