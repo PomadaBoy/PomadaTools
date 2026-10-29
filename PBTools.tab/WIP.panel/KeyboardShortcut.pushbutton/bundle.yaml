@@ -1,0 +1,5 @@
+title: "Keyboard\nShortcut"
+tooltip: Click this button, then click any command on the ribbon (also in drop-downs or the Quick Access Toolbar) and type its new keyboard shortcut. Works right away without restart and is saved in Revit's KeyboardShortcuts.xml. The clicked command starts as usual - press Esc to cancel it. 'Search instead' finds commands by name.
+author: Slobodan Vesovic
+engine:
+  persistent: true
