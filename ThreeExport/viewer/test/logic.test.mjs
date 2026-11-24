@@ -267,3 +267,51 @@ test('range labels keep enough decimals to tell steps apart', () => {
   assert.equal(formatBound(1234.5, 300, 'en-US'), '1,235');
   assert.equal(formatBound(2.5, 2.5, 'en-US'), '2.5');
 });
+
+// ---------- cuts and measuring ----------
+import { Vector3, Plane } from 'three';
+import { toRevit, axisParam, snapNormal, nearestWithin, keptBy, metres } from '../src/geom.js';
+
+test('toRevit undoes the exporter axes: (x, z, -y) recentred', () => {
+  assert.deepEqual(toRevit(new Vector3(1, 2, 3), [100, 200, 10]), [101, 197, 12]);
+  assert.deepEqual(toRevit(new Vector3(0, 0, 0)).map((v) => v + 0), [0, 0, 0]);
+});
+
+test('axisParam: where along a handle axis the pointer ray passes closest', () => {
+  const X = new Vector3(1, 0, 0);
+  // a ray straight down through x = 5 crosses the X axis at t = 5
+  assert.equal(axisParam(new Vector3(0, 0, 0), X, new Vector3(5, 10, 0), new Vector3(0, -1, 0)), 5);
+  // the axis starting elsewhere: t is measured from its own origin
+  assert.equal(axisParam(new Vector3(2, 0, 0), X, new Vector3(5, 10, 3), new Vector3(0, -1, 0)), 3);
+  // a slanted ray
+  const t = axisParam(new Vector3(0, 0, 0), X, new Vector3(0, 4, 0), new Vector3(1, -1, 0).normalize());
+  assert.ok(Math.abs(t - 4) < 1e-9, String(t));
+  // looking along the axis: no answer
+  assert.equal(axisParam(new Vector3(0, 0, 0), X, new Vector3(-5, 0, 0), X), null);
+});
+
+test('snapNormal: nearly square faces become square; slopes stay', () => {
+  assert.deepEqual(snapNormal(new Vector3(0.03, 0.999, 0)).toArray(), [0, 1, 0]);
+  assert.deepEqual(snapNormal(new Vector3(0, 0, -1)).toArray(), [0, 0, -1]);
+  const roof = snapNormal(new Vector3(0, 0.9, 0.3));   // about 18° slope
+  assert.ok(Math.abs(roof.length() - 1) < 1e-12 && roof.z > 0.3);
+});
+
+test('nearestWithin picks the closest point inside the radius', () => {
+  assert.equal(nearestWithin([[0, 0], [10, 0], null, [3, 4]], [2, 3], 12), 3);
+  assert.equal(nearestWithin([[50, 50]], [0, 0], 12), -1);
+});
+
+test('keptBy: three.js keeps the side the plane normal points to', () => {
+  const keepAboveZero = new Plane(new Vector3(0, 1, 0), 0);
+  const keepBelowTwo = new Plane(new Vector3(0, -1, 0), 2);
+  assert.equal(keptBy([keepAboveZero, keepBelowTwo], new Vector3(0, 1, 0)), true);
+  assert.equal(keptBy([keepAboveZero, keepBelowTwo], new Vector3(0, 3, 0)), false);
+  assert.equal(keptBy([keepAboveZero], new Vector3(0, -0.5, 0)), false);
+  assert.equal(keptBy([], new Vector3(9, 9, 9)), true);
+});
+
+test('metres: three decimals', () => {
+  assert.equal(metres(10, 'en-US'), '10.000');
+  assert.equal(metres(1234.5678, 'en-US'), '1,234.568');
+});
