@@ -32,13 +32,29 @@ Colours come from the materials, not from view overrides.
 | Click / tap | inspect an element: parameters, materials, **Copy** ID, **Zoom to** |
 | Drag / right-drag / scroll | orbit / pan / zoom; double-click or **Fit model** fits the view |
 | <kbd>F</kbd> / <kbd>Esc</kbd> | fit the selection / clear it |
+| **Hide / Isolate** | the bar at the clicked element (in the inspect sheet on phones). ▼ offers this element, same type, family, category or level. **Undo** and **Show all** appear under the tools |
+| <kbd>H</kbd><kbd>H</kbd> <kbd>H</kbd><kbd>I</kbd> <kbd>H</kbd><kbd>C</kbd> <kbd>I</kbd><kbd>C</kbd> <kbd>H</kbd><kbd>R</kbd> | Revit's keys: hide / isolate the element, hide / isolate its category, show all. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes |
+| Property row (hover, or tap on phones) | **Copy** the value, **Colour by** this parameter, **Filter on value** |
 | **Explode** | From centre, Vertical or By category, 0–100 %, **Reset** |
 | **Filter** | search, Category/Family/Type/Level/Material checkboxes, rules (equals, contains, >, ≥, has value …, combined with all/any), **Isolate / Ghost / Hide matching**, a list of the matching elements |
+| **Colour** | colour by any parameter, with a legend: each value, or a number range. Untick a legend row to hide those elements |
 | **Copy filtered IDs** | comma-separated IDs for Revit's *Select by ID* (elements of linked models are left out) |
 | **Download .glb** | the 3D model as glTF binary, for Blender and other tools |
 
 Numeric rules read the number at the start of a value, so `Volume > 8` matches
 "8.53 m³", and `Faktor ≤ 1,5` works with decimal commas.
+
+**Filter on value** adds the rule *parameter equals value*; a second value of the same
+parameter replaces the first instead of matching nothing. Hide and isolate work on top of
+the filter: an element shows when the filter shows it and it is not hidden by hand.
+
+**Colour** gives the 8 most common values their own colours and the rest grey ("Other"),
+because more colours can't be told apart. Elements with no value are light grey. Material
+colours each part of an element by its own material. A number range has up to 4 steps
+with about as many elements in each, light for small numbers and dark for large, so one
+very large element doesn't put everything else in the first step. Codes such as BOQ
+positions "5.1.3" count as text. The colours are checked for colour-blind readers, and
+follow the light or dark theme.
 
 ## Build
 
@@ -60,10 +76,12 @@ RevitAPI.dll is never shipped: it comes from the reference-only
   characters, lone surrogates), GLB layout, materials, axes, recentring, index types,
   gzip + base64 round trip, HTML streaming. Writes `tests/out/` (cube, synthetic model).
 - `viewer/test/glb.test.mjs`: the Khronos glTF validator and three's GLTFLoader on those files.
-- `viewer/test/logic.test.mjs`: filter operators, number parsing, explode offsets.
+- `viewer/test/logic.test.mjs`: filter operators, number parsing, explode offsets, colour
+  schemes (values, Other, ranges, codes).
 - `viewer/test/viewer.test.mjs` (Playwright, headless Chromium, `file://`): loading, picking,
   explode and exact Reset, every operator, Isolate/Ghost/Hide, search, facets, the list,
-  Copy IDs, Download .glb, and the layout on desktop and phone.
+  Copy IDs, Download .glb, hide/isolate from the bar and the keys, property row actions,
+  colour by (theme change included), and the layout on desktop and phone.
 
 ## File format
 
@@ -92,6 +110,7 @@ family, type, level, mark, comments, volume_m3, materials, params, typeParams`, 
 ## Known limits
 
 - View colour overrides and filter colours are not exported; colours come from materials.
+  **Colour** in the browser can colour by any parameter instead.
 - Element IDs of linked models belong to the link document, so they are left out of
   Copy filtered IDs.
 - Very large models (several million triangles) make big files. Leave out rebar, or export
