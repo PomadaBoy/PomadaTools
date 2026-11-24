@@ -1,0 +1,3 @@
+title: "Export\n3D HTML"
+tooltip: Export the elements visible in a 3D view to one HTML file with a 3D viewer. It opens by double-click in any browser, works offline and can be emailed. Click an element to see its parameters. Includes linked models. Read-only - nothing in the model changes.
+author: Slobodan Vesovic
