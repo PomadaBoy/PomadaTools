@@ -1124,8 +1124,8 @@ const measureMode = () => mState.active && !!measure;
 const MEASURE_NOTES = {
   distance: 'Click two points. A corner within a few pixels is snapped to.',
   distance2: 'Click the second point. Esc starts again.',
-  laser: 'Click a surface: the laser measures to the nearest surfaces along Revit X, Y and Z.',
-  point: 'Click a point for its Revit coordinates (metres, from the internal origin).',
+  laser: 'Click a surface: the laser measures along it to its edges, through the element (thickness) and out to the next surface.',
+  point: 'Click a point for its coordinates: survey (East, North) when the model has them, else Revit internal.',
 };
 
 function startMeasuring() {
@@ -1170,25 +1170,69 @@ function measureClick(ev) {
   renderMeasures();
 }
 
-/** Rays along Revit X, Y and Z from the clicked surface; not into the surface itself. */
+/** The Revit axis a direction runs along (within about 10°), or null. */
+function axisName(dir) {
+  for (const [name, axis] of Object.entries(REVIT_AXES)) if (Math.abs(dir.dot(axis)) > 0.985) return name;
+  return null;
+}
+const LASER = { a: '#e34948', b: '#2a78d6', normal: '#008300', thickness: '#eda100' };
+
+/**
+ * 3-axis laser from a clicked surface, in line with that surface:
+ * - along it, both ways in two directions, to where it ends (Revit X and Y on a floor; along
+ *   and up a wall). These rays run half way into the element, so they leave it at its edges
+ *   and don't graze small steps on the face, and curved faces don't end them early.
+ * - through the element: its thickness there;
+ * - straight out: the clear distance to the next surface in front.
+ */
 function laser(s) {
   if (explode.f > 0) { mState.note = 'Reset Explode first: the laser measures the model as built.'; return; }
-  const start = s.hit.clone();
-  const origin = start.clone().addScaledVector(s.normal, 0.002);   // just off the surface
-  const hits = [];
-  for (const [axis, dir] of Object.entries(REVIT_AXES)) {
-    for (const sign of [1, -1]) {
-      const d = dir.clone().multiplyScalar(sign);
-      if (d.dot(s.normal) < -0.5) continue;
-      raycaster.set(origin, d);
-      raycaster.far = modelRadius * 8;
-      const h = firstHit(0.001);
-      if (h) hits.push({ axis, sign, anchor: { e: h.e, local: h.point.clone().sub(h.e.offset) }, d: h.point.distanceTo(start) });
-    }
+  const P = s.hit.clone();
+  const n = s.normal.clone().normalize();          // the face normal, towards the viewer
+  const up = REVIT_AXES.Z;
+  let a, b;
+  if (Math.abs(n.dot(up)) > 0.7) {                  // floors, decks, roofs: Revit X and Y in the face
+    a = REVIT_AXES.X.clone().addScaledVector(n, -n.dot(REVIT_AXES.X)).normalize();
+    b = new THREE.Vector3().crossVectors(n, a).normalize();
+  } else {                                          // walls: along the face and up it
+    a = new THREE.Vector3().crossVectors(up, n).normalize();
+    b = new THREE.Vector3().crossVectors(n, a).normalize();
   }
-  raycaster.far = Infinity;
-  if (!hits.length) { mState.note = 'Nothing along X, Y or Z from there: try a surface with something beside, above or below it.'; return; }
-  measure.addLaser({ e: s.e, local: start.clone().sub(s.e.offset) }, hits);
+  const cast = (from, dir) => {
+    raycaster.set(from, dir);
+    raycaster.far = modelRadius * 8;
+    const h = firstHit(1e-4);
+    raycaster.far = Infinity;
+    return h;
+  };
+  const anchorAt = (p, e) => ({ e, local: p.clone().sub(e.offset) });
+  const beams = [];
+
+  // through the element: only the same element's other side counts as its thickness
+  const back = cast(P, n.clone().negate());
+  const thickness = back && back.e === s.e ? back.distance : null;
+  if (thickness != null) beams.push({ label: 'thickness', colour: LASER.thickness, anchor: anchorAt(back.point, back.e), d: thickness });
+  // straight out to the next surface
+  const front = cast(P, n);
+  const nName = axisName(n) ?? '⊥';
+  if (front) beams.push({ label: nName, colour: LASER.normal, anchor: anchorAt(front.point, front.e), d: front.distance });
+
+  // along the face, half way into the element; drawn on the face
+  const inset = thickness != null ? thickness / 2 : 0.001;
+  const Q = P.clone().addScaledVector(n, -inset);
+  const along = [];
+  for (const [dir, colour, fallback] of [[a, LASER.a, '↔'], [b, LASER.b, '↕']]) {
+    const name = axisName(dir) ?? fallback;
+    const half = {};
+    for (const sign of [1, -1]) {
+      const h = cast(Q, dir.clone().multiplyScalar(sign));
+      half[sign] = h ? h.distance : null;
+      if (h) beams.push({ label: name, colour, anchor: anchorAt(h.point.clone().addScaledVector(n, inset), s.e), d: h.distance });
+    }
+    along.push({ name, plus: half[1], minus: half[-1], span: half[1] != null || half[-1] != null ? (half[1] ?? 0) + (half[-1] ?? 0) : null });
+  }
+  if (!beams.length) { mState.note = 'Nothing to measure from there.'; return; }
+  measure.addLaser(anchorAt(P, s.e), beams, { along, thickness, clear: front ? front.distance : null, normal: nName });
 }
 
 function renderMeasures() {
@@ -1202,7 +1246,7 @@ function renderMeasures() {
 }
 
 function setupMeasure() {
-  measure = new Measure(overlay, marks, () => docInfo.revitOffsetMetres);
+  measure = new Measure(overlay, marks, () => docInfo);
   measure.setSize(viewport.clientWidth, viewport.clientHeight);
   for (const b of document.querySelectorAll('#m-mode button')) {
     b.addEventListener('click', () => {
@@ -1469,7 +1513,7 @@ window.viewer = {
   }),
   /** Measurements in Revit metres. */
   measures: () => (measure ? measure.items.map((i) => ({
-    kind: i.kind, d: i.d ?? null, delta: i.delta ?? null, at: i.at ?? null, origin: i.origin ?? null, spans: i.spans ?? null,
+    kind: i.kind, d: i.d ?? null, delta: i.delta ?? null, at: i.at ?? null, origin: i.origin ?? null, info: i.info ?? null, shared: i.shared ?? null,
     points: i.anchors.map((a) => measure.revit(a)), text: measure.describe(i),
   })) : []),
   /** Screen position (client px) of a point in viewer space, and the Revit coordinates of it. */

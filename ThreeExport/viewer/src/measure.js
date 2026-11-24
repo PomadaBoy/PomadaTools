@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
-import { toRevit, metres } from './geom.js';
+import { toRevit, toShared, metres } from './geom.js';
 
 export const AXIS_COLOURS = { X: '#e34948', Y: '#008300', Z: '#2a78d6' };
 const DISTANCE_COLOUR = '#eb6834';
@@ -16,11 +16,14 @@ export const drawnAt = (a) => (a.e ? a.local.clone().add(a.e.offset) : a.local.c
 const realAt = (a) => a.local.clone();
 
 export class Measure {
-  /** overlay: scene drawn on top; host: HTML layer for dots and labels; offset(): revitOffsetMetres */
-  constructor(overlay, host, offset) {
+  /**
+   * overlay: scene drawn on top; host: HTML layer for dots and labels;
+   * info(): the model's export info (revitOffsetMetres, sharedCoordinates)
+   */
+  constructor(overlay, host, info) {
     this.overlay = overlay;
     this.host = host;
-    this.offset = offset;
+    this.info = info;
     this.items = [];
     this.nextId = 1;
     this.materials = new Map();
@@ -29,7 +32,9 @@ export class Measure {
     this.rubber = null;      // the line from the first point to the pointer
   }
 
-  revit(a) { return toRevit(realAt(a), this.offset() ?? [0, 0, 0]); }
+  revit(a) { return toRevit(realAt(a), this.info().revitOffsetMetres ?? [0, 0, 0]); }
+  /** Survey (shared) coordinates of Revit internal ones, when the model has them; else null. */
+  shared(r) { return toShared(r, this.info().sharedCoordinates); }
 
   material(colour) {
     let m = this.materials.get(colour);
@@ -93,36 +98,31 @@ export class Measure {
     return this.add(item);
   }
 
+  /** Position: survey coordinates (East, North, elevation) when the model has them, else Revit's. */
   addPoint(a) {
-    const r = this.revit(a);
+    const r = this.revit(a), sh = this.shared(r);
+    const text = sh
+      ? `E ${metres(sh[0])}\nN ${metres(sh[1])}\nZ ${metres(sh[2])}`
+      : `X ${metres(r[0])}\nY ${metres(r[1])}\nZ ${metres(r[2])}`;
     const item = {
-      kind: 'point', anchors: [a], at: r, lines: [],
-      marks: [this.dot(a, '#1b222c'),
-        { el: this.el('mlabel mpos', `X ${metres(r[0])}\nY ${metres(r[1])}\nZ ${metres(r[2])}`), at: () => drawnAt(a), above: true }],
+      kind: 'point', anchors: [a], at: r, shared: sh, lines: [],
+      marks: [this.dot(a, '#1b222c'), { el: this.el('mlabel mpos', text), at: () => drawnAt(a), above: true }],
     };
     return this.add(item);
   }
 
   /**
-   * hits: [{ axis: 'X'|'Y'|'Z', sign: 1|-1, anchor, d }] (missing when nothing was hit, or
-   * when that direction goes into the clicked surface)
+   * beams: [{ label, colour, anchor, d }], each drawn from the origin to its anchor.
+   * info: { along: [{ name, plus, minus, span }, ...], thickness, clear }, for the list and tests.
    */
-  addLaser(origin, hits) {
+  addLaser(origin, beams, info) {
     const lines = [], marks = [this.dot(origin, '#1b222c')];
-    const spans = {};
-    for (const axis of ['X', 'Y', 'Z']) {
-      const plus = hits.find((h) => h.axis === axis && h.sign > 0);
-      const minus = hits.find((h) => h.axis === axis && h.sign < 0);
-      spans[axis] = { plus: plus?.d ?? null, minus: minus?.d ?? null, span: plus || minus ? (plus?.d ?? 0) + (minus?.d ?? 0) : null };
-      const colour = AXIS_COLOURS[axis];
-      for (const h of [plus, minus]) {
-        if (!h) continue;
-        lines.push(this.line(colour, origin, h.anchor));
-        marks.push(this.dot(h.anchor, colour));
-        marks.push({ el: this.el('mlabel', `${axis} ${metres(h.d)}`, colour), at: () => drawnAt(origin).lerp(drawnAt(h.anchor), 0.5) });
-      }
+    for (const b of beams) {
+      lines.push(this.line(b.colour, origin, b.anchor));
+      marks.push(this.dot(b.anchor, b.colour));
+      marks.push({ el: this.el('mlabel', `${b.label} ${metres(b.d)}`, b.colour), at: () => drawnAt(origin).lerp(drawnAt(b.anchor), 0.5) });
     }
-    return this.add({ kind: 'laser', anchors: [origin, ...hits.map((h) => h.anchor)], origin: this.revit(origin), spans, lines, marks });
+    return this.add({ kind: 'laser', anchors: [origin, ...beams.map((b) => b.anchor)], origin: this.revit(origin), info, lines, marks });
   }
 
   remove(item) {
@@ -140,11 +140,19 @@ export class Measure {
       return { title: `${metres(item.d)} m`, detail: `ΔX ${dx} · ΔY ${dy} · ΔZ ${dz}` };
     }
     if (item.kind === 'point') {
+      if (item.shared) {
+        const [e, n, z] = item.shared.map((v) => metres(v));
+        return { title: 'Position (survey)', detail: `E ${e} · N ${n} · Z ${z}` };
+      }
       const [x, y, z] = item.at.map((v) => metres(v));
       return { title: 'Position', detail: `X ${x} · Y ${y} · Z ${z}` };
     }
-    const s = (a) => (item.spans[a].span == null ? '—' : metres(item.spans[a].span));
-    return { title: 'Laser', detail: `X ${s('X')} · Y ${s('Y')} · Z ${s('Z')} m` };
+    const m = (v) => (v == null ? '—' : metres(v));
+    const { along, thickness, clear } = item.info;
+    return {
+      title: 'Laser',
+      detail: `${along.map((a) => `${a.name} ${m(a.span)}`).join(' · ')} · thickness ${m(thickness)} · clear ${m(clear)} m`,
+    };
   }
 
   /** Explode moved elements: move the lines with them. */

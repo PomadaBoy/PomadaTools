@@ -315,3 +315,14 @@ test('metres: three decimals', () => {
   assert.equal(metres(10, 'en-US'), '10.000');
   assert.equal(metres(1234.5678, 'en-US'), '1,234.568');
 });
+
+test('toShared: survey coordinates from the exporter map, rotation included', async () => {
+  const { toShared } = await import('../src/geom.js');
+  const flat = { origin: [6601541.966, 4699562.621, 0], basisX: [1, 0, 0], basisY: [0, 1, 0], basisZ: [0, 0, 1] };
+  assert.deepEqual(toShared([-9.138, -5.761, 30.214], flat).map((v) => Number(v.toFixed(3))), [6601532.828, 4699556.86, 30.214]);
+  // project north turned 90° from true north: internal +X is shared +Y
+  const turned = { origin: [100, 200, 5], basisX: [0, 1, 0], basisY: [-1, 0, 0], basisZ: [0, 0, 1] };
+  assert.deepEqual(toShared([10, 0, 1], turned), [100, 210, 6]);
+  assert.deepEqual(toShared([0, 10, 0], turned), [90, 200, 5]);
+  assert.equal(toShared([1, 2, 3], undefined), null);
+});

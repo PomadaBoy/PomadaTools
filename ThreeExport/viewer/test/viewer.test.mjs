@@ -749,67 +749,82 @@ test('Measure: point to point snaps to corners; the numbers stay real while expl
   await page.close();
 });
 
-test('Measure: position marker gives Revit coordinates; the laser stops at the nearest surfaces', async () => {
+test('Measure: position marker gives survey coordinates', async () => {
   const { page, errors } = await open();
-  const all = await els(page);
-  const roof = frontRoof(all);
+  const roof = frontRoof(await els(page));
   const { a, centre } = topCorners(roof);
   await page.click('#tb-measure');
   await page.click('#m-mode [data-mode="point"]');
   await page.mouse.click(...(await nearCorner(page, a, centre)));
   const p = (await page.evaluate(() => window.viewer.measures()))[0];
   assert.equal(p.kind, 'point');
-  // the synthetic building's grid: 11985 + 10 k, 7985 + 10 k; roof top at 16 m
+  // Revit internal: the synthetic building's grid, 11985 + 10 k and 7985 + 10 k; roof top at 16 m
   assert.ok([11985, 11995, 12005, 12015].some((x) => Math.abs(p.at[0] - x) < 1e-6), `X ${p.at[0]}`);
   assert.ok([7985, 7995, 8005, 8015].some((y) => Math.abs(p.at[1] - y) < 1e-6), `Y ${p.at[1]}`);
   assert.ok(Math.abs(p.at[2] - 16) < 1e-6, `Z ${p.at[2]}`);
-  assert.match(await page.textContent('#marks .mpos'), /^X 1\d,\d{3}\.\d{3}\nY \d,\d{3}\.\d{3}\nZ 16\.000$/);
+  // survey: the model's shared coordinates put the internal origin at E 6 600 000, N 4 700 000, 100 m
+  assert.ok(near(p.shared, [6600000 + p.at[0], 4700000 + p.at[1], 100 + p.at[2]]), `survey ${p.shared}`);
+  assert.match(await page.textContent('#marks .mpos'), /^E 6,61\d,\d{3}\.\d{3}\nN 4,70\d,\d{3}\.\d{3}\nZ 116\.000$/);
+  assert.equal(p.text.title, 'Position (survey)');
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
 
-  // laser from the top floor with the roofs hidden: walls, columns and furniture around, nothing above
-  await page.click('#m-close');
-  await selectById(page, roof.id);
+test('Measure: the laser measures along the clicked surface to its edges, its thickness and the clear distance', async () => {
+  const { page, errors } = await open();
+  const all = await els(page);
+  // hide the roofs: the top floor slabs are open to the sky
+  await selectById(page, frontRoof(all).id);
   await page.evaluate(() => document.activeElement.blur());
   await page.keyboard.press('h');
   await page.keyboard.press('c');
   assert.equal((await els(page)).filter((e) => e.category === 'Roofs' && e.shown).length, 0);
+  await page.click('#fit');
+  await page.waitForTimeout(700);
   await page.click('#tb-measure');
   await page.click('#m-mode [data-mode="laser"]');
+  const lasers = async () => (await page.evaluate(() => window.viewer.measures())).filter((m) => m.kind === 'laser');
+
+  // a top floor slab, clicked in the middle of its top: 10 × 10 m, 30 cm thick, nothing above
   const floorTop = Math.max(...all.filter((x) => x.category === 'Floors').map((x) => x.box[1][1]));
   const floors = all.filter((e) => e.category === 'Floors' && Math.abs(e.box[1][1] - floorTop) < 1e-6);
   let laser = null;
   for (const f of floors) {
     const mid = [(f.box[0][0] + f.box[1][0]) / 2, f.box[1][1], (f.box[0][2] + f.box[1][2]) / 2];
     await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), mid)));
-    laser = (await page.evaluate(() => window.viewer.measures())).filter((m) => m.kind === 'laser').at(-1);
+    laser = (await lasers()).at(-1);
     if (laser && Math.abs(laser.origin[2] - 12) < 1e-6) break;
     laser = null;
   }
   assert.ok(laser, 'a laser from the top of a top floor slab');
-  assert.equal(laser.spans.Z.plus, null, 'roofs hidden: nothing above');
-  assert.equal(laser.spans.Z.minus, null, 'not down into the clicked slab');
-  const revitBoxes = await page.evaluate(() => window.viewer.elements().filter((e) => e.shown).map((e) => {
-    const lo = window.viewer.toRevit(e.box[0]), hi = window.viewer.toRevit(e.box[1]);
-    return [lo.map((v, i) => Math.min(v, hi[i])), lo.map((v, i) => Math.max(v, hi[i]))];
-  }));
-  const hits = laser.points.slice(1);
-  assert.ok(hits.length >= 2, `${hits.length} hits`);
-  for (const h of hits) {
-    // along one axis from the start point (2 mm above the slab for the horizontal rays)
-    const off = h.map((v, i) => Math.abs(v - laser.origin[i]));
-    assert.equal(off.filter((d) => d > 3e-3).length, 1, `one axis: ${off}`);
-    // on a face of an element that is shown
-    assert.ok(revitBoxes.some(([lo, hi]) => h.every((v, i) => v >= lo[i] - 1e-6 && v <= hi[i] + 1e-6)
-      && h.some((v, i) => Math.abs(v - lo[i]) < 1e-6 || Math.abs(v - hi[i]) < 1e-6)), `hit ${h} on an element face`);
-  }
-  for (const axis of ['X', 'Y']) {
-    const s = laser.spans[axis];
-    if (s.plus != null && s.minus != null) assert.ok(Math.abs(s.span - s.plus - s.minus) < 1e-9);
-    assert.ok(s.span == null || s.span <= 31, `${axis} span inside the building`);
-  }
-  assert.match(await page.textContent('#m-list'), /Laser/);
+  const { along, thickness, clear } = laser.info;
+  assert.deepEqual(along.map((x) => x.name), ['X', 'Y']);
+  for (const x of along) assert.ok(Math.abs(x.span - 10) < 1e-6, `${x.name} across the slab: ${x.span}`);
+  assert.ok(Math.abs(thickness - 0.3) < 1e-6, `thickness ${thickness}`);
+  assert.equal(clear, null, 'roofs hidden: nothing above');
+  // the ends along the slab are drawn on its top face, at its edges
+  const ends = laser.points.slice(1).filter((q) => Math.abs(q[2] - 12) < 1e-6);
+  assert.equal(ends.length, 4);
+  assert.match(laser.text.detail, /^X 10\.000 · Y 10\.000 · thickness 0\.300 · clear — m$/);
+
+  // a wall on the west side, clicked in the middle of its outer face: 25 cm thick, 3.70 m high,
+  // 9.50 m between the columns at its ends, nothing in front
+  const wall = all.filter((e) => e.category === 'Walls' && Math.abs(e.box[0][0] - Math.min(...all.map((x) => x.box[0][0]))) < 1e-6)
+    .sort((p, q) => q.box[1][1] - p.box[1][1])[0];
+  const face = [wall.box[0][0], (wall.box[0][1] + wall.box[1][1]) / 2, (wall.box[0][2] + wall.box[1][2]) / 2];
+  await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), face)));
+  const w = (await lasers()).at(-1);
+  assert.notEqual(w, laser, 'a second laser');
+  assert.deepEqual(w.info.along.map((x) => x.name), ['Y', 'Z']);
+  assert.ok(Math.abs(w.info.thickness - 0.25) < 1e-6, `wall thickness ${w.info.thickness}`);
+  assert.ok(Math.abs(w.info.along[1].span - 3.7) < 1e-6, `wall height ${w.info.along[1].span}`);
+  assert.ok(Math.abs(w.info.along[0].span - 9.5) < 1e-6, `between the columns ${w.info.along[0].span}`);
+  assert.equal(w.info.clear, null);
+  assert.equal(await page.locator('#m-list li').count(), (await lasers()).length, 'one row per laser');
   assert.deepEqual(errors(), []);
   await page.close();
 });
+
 
 const overlap = (a, b) => a && b && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 

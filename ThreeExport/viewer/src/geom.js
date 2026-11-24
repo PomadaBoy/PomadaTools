@@ -9,6 +9,15 @@ export function toRevit(p, o = [0, 0, 0]) {
   return [p.x + o[0], -p.z + o[1], p.y + o[2]];
 }
 
+/**
+ * Shared (survey) coordinates of a point in Revit internal metres, with the map the exporter
+ * writes: shared = origin + x·basisX + y·basisY + z·basisZ. null without one.
+ */
+export function toShared(r, sc) {
+  if (!sc?.origin) return null;
+  return [0, 1, 2].map((i) => sc.origin[i] + r[0] * sc.basisX[i] + r[1] * sc.basisY[i] + r[2] * sc.basisZ[i]);
+}
+
 /** Revit axes in viewer space: X east, Y north, Z up. */
 export const REVIT_AXES = {
   X: new Vector3(1, 0, 0),
