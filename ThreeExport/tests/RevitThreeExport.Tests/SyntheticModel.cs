@@ -136,6 +136,18 @@ namespace RevitThreeExport.Tests
             p["Base Offset"] = "25.0280";
             elements.Add(special);
 
+            // three foundations from a linked model, as the exporter writes them
+            for (var k = 0; k < 3; k++)
+            {
+                double x0 = bx + k * Bay + 3, y0 = by + 3;
+                var f = Box(scene, 700001 + k, "Structural Foundations", "Footing-Rectangular", "Temelj 200x200", "Nula", origin,
+                    x0, y0, -1.5, x0 + 2, y0 + 2, -0.3, new[] { 0 }, rng, "Novi most");
+                f.Extras["link"] = "Konstrukcija";
+                f.Extras["linkInstanceId"] = 999001L;
+                f.MeshName = "999001:" + (700001 + k).ToString(C);
+                elements.Add(f);
+            }
+
             scene.Elements.AddRange(elements
                 .OrderBy(e => e.Category, StringComparer.Create(CultureInfo.InvariantCulture, false))
                 .ThenBy(e => (long)e.Extras["id"]));
@@ -218,7 +230,7 @@ namespace RevitThreeExport.Tests
         {
             var glb = TestUtil.WriteGlb(SyntheticModel.Build(), out var stats);
             Assert.InRange(stats.Elements, 250, 400);
-            Assert.Equal(5, stats.PerCategory.Count);
+            Assert.Equal(6, stats.PerCategory.Count);
             var dir = TestUtil.OutDir;
             File.WriteAllBytes(Path.Combine(dir, "synthetic.glb"), glb);
 

@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
+import { emptyFilter, matches, searchText } from '../src/filter.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.join(here, '..', '..', 'tests', 'out');
@@ -15,31 +16,57 @@ const stats = JSON.parse(fs.readFileSync(path.join(out, 'synthetic.stats.json'),
 // software WebGL in headless Chromium
 const args = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
 
+// element metadata straight from the .glb, to compute expected filter results
+const glb = fs.readFileSync(path.join(out, 'synthetic.glb'));
+const gltf = JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8'));
+const data = gltf.nodes.filter((n) => n.extras?.id && n.extras?.category).map((n) => n.extras);
+const expectIds = (state) => data.filter((d) => matches({ d, text: searchText(d) }, state)).map((d) => d.id).sort();
+const ruleState = (...rules) => ({ ...emptyFilter(), rules: rules.map(([name, op, value = '']) => ({ name, op, value })) });
+
 let browser;
 before(async () => { browser = await chromium.launch({ args }); });
 after(async () => { await browser?.close(); });
 
-async function open(viewport = { width: 1280, height: 800 }) {
-  const page = await browser.newPage({ viewport });
+async function open({ viewport = { width: 1280, height: 800 }, reducedMotion = 'reduce', init } = {}) {
+  const page = await browser.newPage({ viewport, reducedMotion, acceptDownloads: true });
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));
+  if (init) await page.addInitScript(init);
   // the offline file must not need the network (fonts may fail; they fall back)
   await page.route(/^https?:/, (route) => route.abort());
   await page.goto(pathToFileURL(html).href);
-  await page.waitForSelector('#status', { state: 'hidden', timeout: 60000 });
+  assert.equal(await page.evaluate(() => window.viewer.ready), true);
+  await page.waitForSelector('#status', { state: 'hidden' });
   const fontErrors = (e) => !/fonts\.googleapis|ERR_FAILED|net::/.test(e);
   return { page, errors: () => errors.filter(fontErrors) };
 }
 
+const els = (page) => page.evaluate(() => window.viewer.elements());
+const count = async (page) => {
+  const t = await page.textContent('#f-count');
+  const m = t.match(/^(\d+) of (\d+)/) ?? t.match(/^(\d+) elements/);
+  return Number(m[1]);
+};
+const matchIds = async (page) => (await els(page)).filter((e) => e.match).map((e) => e.id).sort();
+
+async function setRule(page, name, op, value = '') {
+  if (!(await page.locator('#f-rules .rule').count())) await page.click('#f-add');
+  await page.fill('#f-rules .rule .r-name', name);
+  await page.selectOption('#f-rules .rule .r-op', op);
+  if (await page.locator('#f-rules .rule .r-val').isEnabled()) await page.fill('#f-rules .rule .r-val', value);
+  await page.locator('#f-search').press('Enter');   // apply now instead of after the typing pause
+}
+
 test('loads the gzip+base64 model with no console errors', async () => {
-  const { page, errors } = await open();
+  const { page, errors } = await open({ reducedMotion: 'no-preference' });
   assert.deepEqual(errors(), []);
   assert.equal(await page.textContent('#doc-title'), 'Sintetički model');
   const cats = await page.textContent('#doc-cats');
   assert.match(cats, new RegExp(`^${stats.elements} elements: `));
   for (const [c, n] of Object.entries(stats.perCategory)) assert.ok(cats.includes(`${c} ${n}`), `${c} ${n} in "${cats}"`);
   assert.match(await page.textContent('#doc-meta'), /Revit view "Export" · exported 2026-11-24 12:00/);
+  assert.equal(await count(page), stats.elements);
   await page.close();
 });
 
@@ -59,8 +86,243 @@ test('clicking an element opens the inspect panel, Esc closes it', async () => {
   await page.close();
 });
 
+test('explode moves elements in each mode and Reset restores the exact original positions', async () => {
+  const { page, errors } = await open();
+  await page.click('#tb-explode');
+  const original = await els(page);
+  for (const e of original) assert.deepEqual(e.position, e.original);
+
+  for (const mode of ['centre', 'vertical', 'category']) {
+    await page.click(`#explode-mode [data-mode="${mode}"]`);
+    await page.fill('#explode-amount', '100');
+    assert.equal(await page.textContent('#explode-value'), '100%');
+    const moved = await els(page);
+    const offsets = moved.map((e) => e.position.map((v, k) => v - e.original[k]));
+    assert.ok(offsets.some((o) => Math.hypot(...o) > 1), `${mode}: something moved`);
+    if (mode !== 'centre') {
+      assert.ok(offsets.every((o) => Math.abs(o[0]) < 1e-9 && Math.abs(o[2]) < 1e-9), `${mode}: Y only`);
+      assert.ok(offsets.every((o) => o[1] >= -1e-9), `${mode}: never down`);
+    }
+    if (mode === 'category') {
+      const byCat = new Map();
+      moved.forEach((e, i) => { (byCat.get(e.category) ?? byCat.set(e.category, new Set()).get(e.category)).add(offsets[i][1].toFixed(6)); });
+      for (const [c, ys] of byCat) assert.equal(ys.size, 1, `${c} moves as one group`);
+    }
+    await page.click('#explode-reset');
+    assert.equal(await page.inputValue('#explode-amount'), '0');
+    const back = await els(page);
+    back.forEach((e, i) => assert.deepEqual(e.position, original[i].original, `${mode}: element ${e.id} back exactly`));
+  }
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('explode animates and still ends exactly on the original positions', async () => {
+  const { page } = await open({ reducedMotion: 'no-preference' });
+  await page.click('#tb-explode');
+  await page.fill('#explode-amount', '80');
+  assert.equal((await page.evaluate(() => window.viewer.state())).explode.animating, true);
+  await page.waitForFunction(() => !window.viewer.state().explode.animating);
+  assert.ok((await els(page)).some((e) => e.position.some((v, k) => Math.abs(v - e.original[k]) > 1)));
+  await page.click('#explode-reset');
+  await page.waitForFunction(() => !window.viewer.state().explode.animating);
+  for (const e of await els(page)) assert.deepEqual(e.position, e.original);
+  await page.close();
+});
+
+test('picking and fit keep working while exploded', async () => {
+  const { page } = await open();
+  await page.click('#tb-explode');
+  await page.click('#explode-mode [data-mode="vertical"]');
+  await page.fill('#explode-amount', '100');
+  await page.click('#fit');
+  // every element is inside the canvas after fitting the exploded model
+  const box = await page.locator('#viewport canvas').boundingBox();
+  for (const e of await els(page)) {
+    const [x, y] = await page.evaluate((id) => window.viewer.screenPoint(id), e.id);
+    assert.ok(x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height, `element ${e.id} in view`);
+  }
+  // the roof slabs rise the most: click one where it is now
+  const roof = (await els(page)).find((e) => e.category === 'Roofs');
+  const [x, y] = await page.evaluate((id) => window.viewer.screenPoint(id), roof.id);
+  await page.mouse.click(x, y);
+  await page.waitForSelector('#panel:not([hidden])');
+  assert.equal(await page.textContent('#panel .chip'), 'Roofs');
+  await page.close();
+});
+
+test('every filter operator, including numbers in "8.53 m³" and "1,5"', async () => {
+  const { page, errors } = await open();
+  await page.click('#tb-filter');
+  const cases = [
+    ['Dilatacija', 'eq', 'novi most'], ['Dilatacija', 'ne', 'Novi most'],
+    ['Type', 'contains', 'kulir'], ['Type', 'ncontains', 'Ploča'], ['Type', 'begins', 'zid'],
+    ['Volume', 'gt', '8'], ['Volume', 'ge', '8.53'], ['Volume', 'lt', '0,8'], ['Volume', 'le', '0.72'],
+    ['Volume', 'eq', '8.53'], ['Faktor', 'gt', '1,5'], ['Faktor', 'eq', '1.5'], ['Faktor', 'le', '2'],
+    ['Width', 'lt', '0.3'], ['Mark', 'has'], ['Comments', 'hasnot'], ['volume', 'gt', '20'],
+    ['Element ID', 'eq', '843064'], ['Level', 'eq', 'Nula'], ['Material', 'contains', 'čelik'],
+  ];
+  for (const [name, op, value] of cases) {
+    await setRule(page, name, op, value);
+    const expected = expectIds(ruleState([name.toLowerCase() === 'volume' ? 'Volume' : name, op, value]));
+    assert.ok(expected.length > 0 && expected.length < data.length, `${name} ${op} ${value} should be a real test (${expected.length})`);
+    assert.equal(await count(page), expected.length, `${name} ${op} ${value}`);
+    assert.deepEqual(await matchIds(page), expected, `${name} ${op} ${value}`);
+  }
+  // the checklist element: Volume 8.53 m³ (display string) matches numerically
+  await setRule(page, 'Volume', 'ge', '8.53');
+  assert.ok((await matchIds(page)).includes(843064));
+  await setRule(page, 'Volume', 'gt', '8.53');
+  assert.ok(!(await matchIds(page)).includes(843064));
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('two rules combine with AND or OR', async () => {
+  const { page } = await open();
+  await page.click('#tb-filter');
+  await page.click('#f-add');
+  await page.click('#f-add');
+  const rows = page.locator('#f-rules .rule');
+  await rows.nth(0).locator('.r-name').fill('Category');
+  await rows.nth(0).locator('.r-val').fill('Walls');
+  await rows.nth(1).locator('.r-name').fill('Level');
+  await rows.nth(1).locator('.r-val').fill('Nula');
+  await page.locator('#f-search').press('Enter');
+  const both = expectIds(ruleState(['Category', 'eq', 'Walls'], ['Level', 'eq', 'Nula']));
+  assert.equal(await count(page), both.length);
+  assert.ok(await page.isVisible('#f-combine'));
+  await page.selectOption('#f-combine', 'or');
+  const either = expectIds({ ...ruleState(['Category', 'eq', 'Walls'], ['Level', 'eq', 'Nula']), combine: 'or' });
+  assert.equal(await count(page), either.length);
+  assert.ok(either.length > both.length);
+  await page.close();
+});
+
+test('Isolate, Ghost and Hide matching show the right elements', async () => {
+  const { page } = await open();
+  await page.click('#tb-filter');
+  await setRule(page, 'Category', 'eq', 'Walls');
+  const n = stats.perCategory.Walls, all = stats.elements;
+  const summary = async () => {
+    const e = await els(page);
+    return { match: e.filter((x) => x.match).length, shown: e.filter((x) => x.shown).length, ghost: e.filter((x) => x.ghost).length };
+  };
+  assert.deepEqual(await summary(), { match: n, shown: n, ghost: 0 });
+  assert.equal(await page.textContent('#f-count'), `${n} of ${all} elements`);
+  await page.click('#f-mode [data-mode="ghost"]');
+  assert.deepEqual(await summary(), { match: n, shown: all, ghost: all - n });
+  await page.click('#f-mode [data-mode="hide"]');
+  assert.deepEqual(await summary(), { match: n, shown: all - n, ghost: 0 });
+  // ghosts cannot be picked: in ghost mode only walls can be selected
+  await page.click('#f-mode [data-mode="ghost"]');
+  const box = await page.locator('#viewport canvas').boundingBox();
+  for (const [fx, fy] of [[0.42, 0.5], [0.5, 0.45], [0.55, 0.6], [0.35, 0.55]]) {
+    await page.mouse.click(box.x + box.width * fx, box.y + box.height * fy);
+    const sel = (await page.evaluate(() => window.viewer.state())).selected;
+    if (sel != null) assert.ok((await els(page)).find((e) => e.id === sel && e.category === 'Walls'), `picked ${sel} is a wall`);
+  }
+  await page.click('#f-clear');
+  assert.deepEqual(await summary(), { match: all, shown: all, ghost: 0 });
+  assert.equal(await page.textContent('#f-count'), `${all} elements`);
+  await page.close();
+});
+
+test('search looks in IDs, names and every parameter value', async () => {
+  const { page } = await open();
+  await page.click('#tb-filter');
+  for (const q of ['843064', 'šđčćž', 'kulir', 'HEB 300', 'stari most', 'M-7']) {
+    await page.fill('#f-search', q);
+    await page.locator('#f-search').press('Enter');
+    const expected = expectIds({ ...emptyFilter(), search: q });
+    assert.ok(expected.length > 0, q);
+    assert.deepEqual(await matchIds(page), expected, q);
+  }
+  await page.fill('#f-search', 'nothing like this');
+  await page.locator('#f-search').press('Enter');
+  assert.equal(await count(page), 0);
+  assert.match(await page.textContent('#f-list'), /No element matches/);
+  await page.close();
+});
+
+test('facets: unchecking values, None and All', async () => {
+  const { page } = await open();
+  await page.click('#tb-filter');
+  const cat = page.locator('#f-facets details[data-facet="category"]');
+  await cat.locator('summary').click();
+  await cat.locator('input[value="Walls"]').uncheck();
+  assert.equal(await count(page), stats.elements - stats.perCategory.Walls);
+  assert.equal(await cat.locator('.off').textContent(), '1 off');
+  await cat.locator('[data-none]').click();
+  assert.equal(await count(page), 0);
+  await cat.locator('[data-all]').click();
+  assert.equal(await count(page), stats.elements);
+  const mat = page.locator('#f-facets details[data-facet="material"]');
+  await mat.locator('summary').click();
+  await mat.locator('[data-none]').click();
+  await mat.locator('input[value="Kulir"]').check();
+  assert.deepEqual(await matchIds(page), [843064]);
+  await page.close();
+});
+
+test('the results list selects and zooms; Copy filtered IDs leaves out linked elements', async () => {
+  let copied = null;
+  const { page } = await open({
+    init: () => {
+      window.__copied = [];
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__copied.push(t); } } });
+    },
+  });
+  await page.click('#tb-filter');
+  await setRule(page, 'Level', 'eq', 'Nula');
+  const expected = expectIds(ruleState(['Level', 'eq', 'Nula']));
+  const linked = data.filter((d) => d.link && expected.includes(d.id)).map((d) => d.id);
+  assert.equal(linked.length, 3, 'the synthetic model has 3 linked foundations on Nula');
+  await page.click('#f-copy');
+  copied = (await page.evaluate(() => window.__copied)).at(-1);
+  assert.deepEqual(copied.split(',').map(Number).sort(), expected.filter((id) => !linked.includes(id)));
+  assert.match(await page.textContent('#f-copy'), new RegExp(`Copied ${expected.length - 3} IDs`));
+  // the list: click an item -> selected and highlighted in the list
+  const item = page.locator('#f-list button').nth(2);
+  const id = Number(await item.locator('code').textContent());
+  await item.click();
+  assert.equal((await page.evaluate(() => window.viewer.state())).selected, id);
+  assert.equal(await item.getAttribute('aria-current'), 'true');
+  assert.equal(await page.textContent('#panel .idrow code'), String(id));
+  await page.close();
+});
+
+test('Download .glb saves the model', async () => {
+  const { page } = await open();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('#tb-download')]);
+  assert.equal(download.suggestedFilename(), 'Sintetički model_Export.glb');
+  const file = await download.path();
+  assert.deepEqual(fs.readFileSync(file), glb);
+  await page.close();
+});
+
+const overlap = (a, b) => a && b && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+test('panels do not overlap the inspect panel (desktop and phone)', async () => {
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 800, height: 700 }, { width: 375, height: 812 }]) {
+    const { page } = await open({ viewport });
+    await page.click('#tb-explode');
+    await page.click('#tb-filter');
+    await page.locator('#f-list button').first().click();
+    await page.waitForSelector('#panel:not([hidden])');
+    const side = await page.locator('#side').boundingBox();
+    const filterBox = await page.locator('#filter').boundingBox();
+    const panelBox = await page.locator('#panel').boundingBox();
+    assert.ok(!overlap(filterBox, panelBox), `${viewport.width}px: filter overlaps the inspect panel`);
+    assert.ok(!overlap(side, panelBox), `${viewport.width}px: tools overlap the inspect panel`);
+    const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+    assert.ok(sw <= cw, `${viewport.width}px: scrollWidth ${sw} > clientWidth ${cw}`);
+    await page.close();
+  }
+});
+
 test('phone layout has no horizontal scroll', async () => {
-  const { page } = await open({ width: 375, height: 812 });
+  const { page } = await open({ viewport: { width: 375, height: 812 } });
   const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
   assert.ok(sw <= cw, `scrollWidth ${sw} > clientWidth ${cw}`);
   await page.close();

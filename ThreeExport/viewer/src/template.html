@@ -130,6 +130,92 @@
   summary span { color: var(--muted); font-weight: 400; margin-left: 4px; }
   details table { margin-top: 6px; font-size: 12px; }
   .uid { margin: 14px 0 0; font: 10.5px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+
+  /* Tools column: under the header on the left; stops above the hint, never under the inspect panel. */
+  #side {
+    position: fixed; z-index: 1;
+    left: calc(var(--gap) + env(safe-area-inset-left, 0px));
+    top: calc(var(--gap) + env(safe-area-inset-top, 0px) + var(--head-h, 92px) + 10px);
+    bottom: calc(var(--gap) + env(safe-area-inset-bottom, 0px) + var(--hint-h, 0px) + 10px);
+    width: min(360px, calc(100vw - 2 * var(--gap)));
+    display: flex; flex-direction: column; align-items: stretch; gap: 10px; pointer-events: none;
+  }
+  #side > * { pointer-events: auto; }
+  #side > .card { position: relative; }
+  @media (min-width: 641px) and (max-width: 860px) {
+    body.inspecting #side { width: max(200px, calc(100vw - 380px - 3 * var(--gap))); }
+  }
+  @media (max-width: 640px) {
+    /* keep the lower part of the screen for the model */
+    #side { width: auto; right: calc(var(--gap) + env(safe-area-inset-right, 0px)); bottom: calc(40% + env(safe-area-inset-bottom, 0px)); }
+    body.inspecting #side { bottom: calc(58% + var(--gap) + 10px + env(safe-area-inset-bottom, 0px)); }
+  }
+  #tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px; align-self: flex-start; max-width: 100%; }
+  .tool {
+    border: 0; background: none; border-radius: 7px; padding: 6px 11px; font-weight: 600; font-size: 12.5px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .tool:hover { background: var(--well); }
+  .tool[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
+  .badge {
+    background: var(--accent); color: #fff; border-radius: 99px; padding: 0 6px; font-size: 11px; line-height: 17px;
+    font-variant-numeric: tabular-nums;
+  }
+  .seg { display: flex; background: var(--well); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg button {
+    flex: 1; border: 0; background: none; border-radius: 6px; padding: 5px 6px; font-size: 12px; color: var(--muted);
+    white-space: nowrap;
+  }
+  .seg button[aria-pressed="true"] { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, .14); }
+  .ctl-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #explode { padding: 10px 12px; display: grid; gap: 9px; flex: none; }
+  #explode input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  #explode output { font: 12px var(--font-mono); min-width: 3.2em; text-align: right; color: var(--muted); }
+
+  #filter { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; overflow: hidden; }
+  .f-head { display: flex; align-items: center; gap: 8px; padding: 9px 10px 8px 14px; border-bottom: 1px solid var(--line); }
+  .f-head h2 { margin: 0; font: 600 16px var(--font-display); }
+  #f-count { color: var(--muted); font-size: 12px; margin-right: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .f-body { overflow-y: auto; padding: 10px 14px 14px; display: grid; gap: 8px; align-content: start; min-height: 0; font-size: 12.5px; }
+  .f-body h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 8px 0 0; font-weight: 600; }
+  .field {
+    font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 8px; min-width: 0; width: 100%;
+  }
+  .field:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+  .field:disabled { opacity: .45; }
+  details.facet { margin: 0; border: 1px solid var(--line); border-radius: 8px; padding: 0; }
+  details.facet > summary { padding: 6px 9px; display: flex; align-items: center; gap: 6px; list-style: none; }
+  details.facet > summary::-webkit-details-marker { display: none; }
+  details.facet > summary::before { content: "▸"; color: var(--muted); font-size: 10px; width: 10px; }
+  details.facet[open] > summary::before { content: "▾"; }
+  details.facet > summary span { margin-left: 0; }
+  details.facet .off { margin-left: auto; color: var(--accent); font-weight: 600; }
+  .fl-actions { display: flex; gap: 10px; padding: 0 9px 4px 25px; }
+  .link { border: 0; background: none; padding: 0; color: var(--accent); font-size: 12px; }
+  .link:hover { text-decoration: underline; }
+  .fl { list-style: none; margin: 0; padding: 0 6px 6px 6px; max-height: 190px; overflow-y: auto; }
+  .fl label { display: flex; align-items: center; gap: 7px; padding: 3px 4px; border-radius: 5px; cursor: pointer; }
+  .fl label:hover { background: var(--well); }
+  .fl .v { overflow-wrap: anywhere; }
+  .fl .c { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; padding-left: 8px; }
+  .fl input { accent-color: var(--accent); margin: 0; flex: none; }
+  .rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto; gap: 5px; padding: 7px; background: var(--well); border-radius: 8px; }
+  .rule .r-name { grid-column: 1 / -1; }
+  .rule button.icon { font-size: 18px; }
+  .res-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+  .res-head h3 { margin: 0; }
+  #f-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+  #f-list button {
+    width: 100%; text-align: left; border: 0; background: none; padding: 5px 7px; border-radius: 6px;
+    display: flex; gap: 7px; align-items: baseline; font-size: 12.5px;
+  }
+  #f-list button:hover { background: var(--well); }
+  #f-list button[aria-current="true"] { background: var(--accent-soft); }
+  #f-list .cat { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  #f-list .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #f-list code { margin-left: auto; font: 11.5px var(--font-mono); color: var(--muted); padding-left: 6px; }
+  #f-list .more { color: var(--muted); padding: 6px 7px; font-size: 12px; }
   @media (prefers-reduced-motion: reduce) { #status .bar i { transition: none; } }
   [hidden] { display: none !important; }
 </style>
@@ -146,6 +232,54 @@
 <div id="hint" class="card">
   <span class="mouse">Click an element to inspect · drag to orbit · right-drag to pan · scroll to zoom · double-click to fit · <kbd>F</kbd> fit selection · <kbd>Esc</kbd> clear</span>
   <span class="touch">Tap an element to inspect · drag to orbit · two fingers to pan and zoom</span>
+</div>
+<div id="side" hidden>
+  <div id="tools" class="card">
+    <button id="tb-explode" class="tool" type="button" aria-expanded="false" aria-controls="explode">Explode</button>
+    <button id="tb-filter" class="tool" type="button" aria-expanded="false" aria-controls="filter">Filter<span id="tb-filter-n" class="badge" hidden></span></button>
+    <button id="tb-download" class="tool" type="button" title="Save the 3D model as a .glb file">Download .glb</button>
+  </div>
+  <section id="explode" class="card" aria-label="Explode" hidden>
+    <div id="explode-mode" class="seg" role="group" aria-label="Explode mode">
+      <button type="button" data-mode="centre" aria-pressed="true">From centre</button>
+      <button type="button" data-mode="vertical" aria-pressed="false">Vertical</button>
+      <button type="button" data-mode="category" aria-pressed="false">By category</button>
+    </div>
+    <div class="ctl-row">
+      <input id="explode-amount" type="range" min="0" max="100" step="1" value="0" aria-label="Explode amount">
+      <output id="explode-value" for="explode-amount">0%</output>
+      <button id="explode-reset" class="ghost" type="button">Reset</button>
+    </div>
+  </section>
+  <section id="filter" class="card" aria-label="Filter" hidden>
+    <header class="f-head">
+      <h2>Filter</h2>
+      <span id="f-count"></span>
+      <button id="f-clear" class="ghost" type="button">Clear all</button>
+      <button id="f-close" class="icon" type="button" title="Close" aria-label="Close the filter">×</button>
+    </header>
+    <div class="f-body">
+      <input id="f-search" class="field" type="search" placeholder="Search ID, family, type, any value…" aria-label="Search" autocomplete="off">
+      <div id="f-mode" class="seg" role="group" aria-label="Show the result as">
+        <button type="button" data-mode="isolate" aria-pressed="true">Isolate</button>
+        <button type="button" data-mode="ghost" aria-pressed="false">Ghost</button>
+        <button type="button" data-mode="hide" aria-pressed="false">Hide matching</button>
+      </div>
+      <h3>Properties</h3>
+      <div id="f-facets" style="display: grid; gap: 6px"></div>
+      <h3>Rules</h3>
+      <div id="f-rules" style="display: grid; gap: 6px"></div>
+      <div class="ctl-row">
+        <button id="f-add" class="ghost" type="button">+ Add rule</button>
+        <label id="f-combine-wrap" class="ctl-row" style="margin-left: auto; gap: 6px" hidden>Match
+          <select id="f-combine" class="field" style="width: auto"><option value="and">all rules</option><option value="or">any rule</option></select>
+        </label>
+      </div>
+      <datalist id="f-names"></datalist>
+      <div class="res-head"><h3>Elements</h3><button id="f-copy" class="ghost" type="button" title="Copy the IDs of the matching elements, comma-separated, for Revit's Select by ID">Copy filtered IDs</button></div>
+      <ul id="f-list"></ul>
+    </div>
+  </section>
 </div>
 <div id="status" class="card" role="status">
   <span id="status-text">Loading model…</span>
