@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Tests for the Revit-free core (JSON, GLB, base64/gzip, HTML packaging). The core
+       sources are compiled in directly, so no Revit API is needed. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>RevitThreeExport.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\RevitThreeExport\Core\*.cs" Link="Core\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\src\RevitThreeExport\Resources\viewer.html" LogicalName="RevitThreeExport.viewer.html" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="xunit" Version="2.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

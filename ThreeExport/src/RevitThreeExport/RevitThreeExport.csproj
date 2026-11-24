@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    One DLL for Revit 2021-2024 (.NET Framework 4.8, built against the 2021 API) and
+    one for Revit 2025+ (.NET 8, built against the 2025 API). The Revit API comes from
+    reference-only NuGet packages and is never copied to the output.
+    Build with ..\..\build.ps1, which builds the viewer first (Resources\viewer.html).
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net48;net8.0-windows</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>RevitThreeExport</RootNamespace>
+    <AssemblyName>RevitThreeExport</AssemblyName>
+    <Version>1.0.0</Version>
+    <Authors>Slobodan Vesovic</Authors>
+    <Product>RevitThreeExport</Product>
+    <Description>Exports the visible elements of a Revit 3D view to one self-contained three.js HTML file.</Description>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>embedded</DebugType>
+    <Deterministic>true</Deterministic>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net48'">
+    <RevitVersion>2021</RevitVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <RevitVersion>2025</RevitVersion>
+    <DefineConstants>$(DefineConstants);REVIT2024_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="$(RevitVersion).*" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\viewer.html" LogicalName="RevitThreeExport.viewer.html" />
+  </ItemGroup>
+
+  <Target Name="CheckViewerTemplate" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('Resources\viewer.html')" Text="Resources\viewer.html is missing: run 'node build.mjs' in ThreeExport\viewer (or ThreeExport\build.ps1)." />
+  </Target>
+
+</Project>

@@ -1,0 +1,18 @@
+{
+  "name": "revit-three-export-viewer",
+  "private": true,
+  "type": "module",
+  "description": "three.js viewer for the Revit 3D view exporter; built into the DLL as Resources/viewer.html",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/",
+    "test:glb": "node --test test/glb.test.mjs",
+    "test:viewer": "node --test test/viewer.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "gltf-validator": "2.0.0-dev.3.10",
+    "playwright": "1.65.1",
+    "three": "0.187.0"
+  }
+}

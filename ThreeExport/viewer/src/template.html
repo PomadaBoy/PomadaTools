@@ -1,0 +1,156 @@
+<title>__TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: full-bleed 3D canvas; floating cards pinned to the corners; inspector docks right (bottom sheet on phones). */
+  :root {
+    --bg-top: #f5f7f9; --bg-bottom: #dfe4ea;
+    --ink: #1b222c; --muted: #5a6473; --line: #dde2e8;
+    --card: rgba(255, 255, 255, .92); --well: #eef1f5;
+    --accent: #1f6feb; --accent-soft: #e6effd;
+    --grid-major: #b9c0ca; --grid-minor: #d5dae1;
+    --shadow: 0 6px 24px rgba(20, 30, 50, .10);
+    --font-display: "Barlow", "Segoe UI", system-ui, sans-serif;
+    --font-body: "Inter", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+    --gap: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg-top: #1b212a; --bg-bottom: #0f1318;
+      --ink: #e6eaf0; --muted: #9aa4b2; --line: #2c3440;
+      --card: rgba(24, 29, 37, .92); --well: #222a35;
+      --accent: #6aa1ff; --accent-soft: #1c2b44;
+      --grid-major: #3a4350; --grid-minor: #262d37;
+      --shadow: 0 6px 24px rgba(0, 0, 0, .40);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg-top: #1b212a; --bg-bottom: #0f1318;
+    --ink: #e6eaf0; --muted: #9aa4b2; --line: #2c3440;
+    --card: rgba(24, 29, 37, .92); --well: #222a35;
+    --accent: #6aa1ff; --accent-soft: #1c2b44;
+    --grid-major: #3a4350; --grid-minor: #262d37;
+    --shadow: 0 6px 24px rgba(0, 0, 0, .40);
+    color-scheme: dark;
+  }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    margin: 0; font-family: var(--font-body); font-size: 14px; color: var(--ink);
+    background: radial-gradient(120% 90% at 50% 12%, var(--bg-top), var(--bg-bottom));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  * { box-sizing: border-box; }
+  #viewport { position: fixed; inset: 0; }
+  #viewport canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
+
+  .card {
+    position: fixed; background: var(--card); color: var(--ink);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
+  }
+  #head {
+    top: calc(var(--gap) + env(safe-area-inset-top, 0px));
+    left: calc(var(--gap) + env(safe-area-inset-left, 0px));
+    max-width: min(520px, calc(100vw - 2 * var(--gap)));
+    padding: 12px 16px; display: grid; gap: 3px;
+  }
+  #head .row { display: flex; align-items: center; gap: 12px; }
+  #head h1 {
+    margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 19px;
+    letter-spacing: .01em; text-wrap: balance; margin-right: auto; min-width: 0;
+  }
+  #head p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; font-variant-numeric: tabular-nums; }
+  #hint {
+    bottom: calc(var(--gap) + env(safe-area-inset-bottom, 0px));
+    left: calc(var(--gap) + env(safe-area-inset-left, 0px));
+    max-width: calc(100vw - 2 * var(--gap));
+    padding: 7px 12px; font-size: 12px; color: var(--muted); line-height: 1.6;
+  }
+  .touch { display: none; }
+  @media (hover: none) { .mouse { display: none; } .touch { display: inline; } }
+  kbd {
+    font: 11px/1 var(--font-mono); border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; padding: 2px 5px; background: var(--well); color: var(--ink);
+  }
+  #status {
+    top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 14px 20px;
+    font-size: 14px; display: grid; gap: 8px; min-width: 220px; text-align: center;
+  }
+  #status .bar { height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; }
+  #status .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #status.error { color: #c4361f; }
+
+  #panel {
+    top: calc(var(--gap) + env(safe-area-inset-top, 0px));
+    right: calc(var(--gap) + env(safe-area-inset-right, 0px));
+    bottom: calc(var(--gap) + env(safe-area-inset-bottom, 0px));
+    width: min(380px, calc(100vw - 2 * var(--gap)));
+    padding: 14px 16px 16px; overflow-y: auto; font-size: 13px;
+  }
+  @media (max-width: 640px) {
+    #panel { top: auto; left: calc(var(--gap) + env(safe-area-inset-left, 0px)); width: auto; height: 58%; }
+    #hint { display: none; }
+  }
+  #panel header { display: flex; justify-content: space-between; align-items: center; }
+  .chip {
+    background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 11.5px;
+    padding: 3px 9px; border-radius: 99px; letter-spacing: .03em;
+  }
+  #panel h2 {
+    font-family: var(--font-display); font-weight: 600; font-size: 20px;
+    margin: 10px 0 8px; line-height: 1.25; overflow-wrap: anywhere; text-wrap: balance;
+  }
+  #panel h3 {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    margin: 16px 0 6px; font-weight: 600;
+  }
+  .idrow { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--well); border-radius: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .idrow span { color: var(--muted); font-size: 12px; }
+  .idrow code { font: 600 14px var(--font-mono); margin-right: auto; }
+  button { font: inherit; cursor: pointer; color: var(--ink); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.ghost { border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: 3px 9px; font-size: 12px; }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.icon { border: 0; background: none; font-size: 22px; line-height: 1; color: var(--muted); padding: 0 4px; }
+  button.icon:hover { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; vertical-align: top; padding: 5px 0; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; width: 44%; padding-right: 10px; overflow-wrap: anywhere; }
+  td { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  table.key td { font-weight: 500; }
+  .mats { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+  .mats li { display: flex; align-items: center; gap: 8px; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--line); flex: none; }
+  details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+  summary { cursor: pointer; font-weight: 600; font-size: 12.5px; padding: 2px 0; }
+  summary span { color: var(--muted); font-weight: 400; margin-left: 4px; }
+  details table { margin-top: 6px; font-size: 12px; }
+  .uid { margin: 14px 0 0; font: 10.5px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+  @media (prefers-reduced-motion: reduce) { #status .bar i { transition: none; } }
+  [hidden] { display: none !important; }
+</style>
+
+<div id="viewport"></div>
+<div id="head" class="card">
+  <div class="row">
+    <h1 id="doc-title">__TITLE__</h1>
+    <button id="fit" class="ghost" type="button">Fit model</button>
+  </div>
+  <p id="doc-meta"></p>
+  <p id="doc-cats"></p>
+</div>
+<div id="hint" class="card">
+  <span class="mouse">Click an element to inspect · drag to orbit · right-drag to pan · scroll to zoom · double-click to fit · <kbd>F</kbd> fit selection · <kbd>Esc</kbd> clear</span>
+  <span class="touch">Tap an element to inspect · drag to orbit · two fingers to pan and zoom</span>
+</div>
+<div id="status" class="card" role="status">
+  <span id="status-text">Loading model…</span>
+  <div class="bar"><i id="status-bar"></i></div>
+</div>
+<aside id="panel" class="card" hidden></aside>
+__MODEL_TAG__
+__APP_TAGS__
