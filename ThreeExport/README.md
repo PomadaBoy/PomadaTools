@@ -35,7 +35,7 @@ Colours come from the materials, not from view overrides.
 | **Hide / Isolate** | the bar at the clicked element (in the inspect sheet on phones). ▼ offers this element, same type, family, category or level. **Undo** and **Show all** appear under the tools |
 | <kbd>H</kbd><kbd>H</kbd> <kbd>H</kbd><kbd>I</kbd> <kbd>H</kbd><kbd>C</kbd> <kbd>I</kbd><kbd>C</kbd> <kbd>H</kbd><kbd>R</kbd> | Revit's keys: hide / isolate the element, hide / isolate its category, show all. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes |
 | **Cut** (same bar) | **Add cut**: a section plane on the clicked face, keeping what is behind it. **Box cut**: a section box around the element. Drag the orange arrows to move a plane or resize the box; the **Cuts** card under the tools has a slider, **Flip**, **Zoom to** and **Remove** |
-| **Measure** | **Point to point** (corners within 12 px snap; shows the distance and ΔX ΔY ΔZ), **3-axis laser** (from a surface to the nearest surfaces along Revit X, Y and Z), **Position** (Revit coordinates of a point). <kbd>Esc</kbd> drops a first point, then stops measuring |
+| **Measure** | **Point to point** (corners within 12 px snap; shows the distance and ΔX ΔY ΔZ), **3-axis laser** (click a surface: along it both ways to its edges, in Revit X and Y on a floor or along and up a wall; through the element for its thickness; straight out for the clear distance to the next surface), **Position** (survey coordinates East, North and elevation, or Revit's internal ones when the model has no shared coordinates). <kbd>Esc</kbd> drops a first point, then stops measuring |
 | Property row (hover, or tap on phones) | **Copy** the value, **Colour by** this parameter, **Filter on value** |
 | **Explode** | From centre, Vertical or By category, 0–100 %, **Reset** |
 | **Filter** | search, Category/Family/Type/Level/Material checkboxes, rules (equals, contains, >, ≥, has value …, combined with all/any), **Isolate / Ghost / Hide matching**, a list of the matching elements |
@@ -51,8 +51,8 @@ parameter replaces the first instead of matching nothing. Hide and isolate work 
 the filter: an element shows when the filter shows it and it is not hidden by hand.
 
 Measurements are in metres, between the points as built: measuring an exploded model gives
-the same numbers as before exploding. Positions are Revit's internal coordinates (from the
-internal origin), not shared or survey coordinates. Picking and measuring skip hidden,
+the same numbers as before exploding. Positions use the project's shared (survey) coordinates when it has
+them, as in Revit's survey point; ΔX ΔY ΔZ of a distance are along the project axes. Picking and measuring skip hidden,
 ghosted and cut-away parts.
 
 **Colour** gives the 8 most common values their own colours and the rest grey ("Other"),
@@ -100,7 +100,9 @@ uses the prototype's layout: a root node with the export info in `extras`, one n
 and one node per element. Each element has its metadata in `extras` (`id, uniqueId, category,
 family, type, level, mark, comments, volume_m3, materials, params, typeParams`, plus `link` and
 `linkInstanceId` for linked elements). Coordinates are metres, Y up, recentred:
-`revit_m = (x + o.x, −z + o.y, y + o.z)` with `o = revitOffsetMetres`.
+`revit_m = (x + o.x, −z + o.y, y + o.z)` with `o = revitOffsetMetres`. When the project has
+shared coordinates, the root `extras` also hold `sharedCoordinates` (`location`, `origin`,
+`basisX`, `basisY`, `basisZ`): `shared = origin + revit_m.x·basisX + revit_m.y·basisY + revit_m.z·basisZ`.
 
 ## Checklist in Revit
 
