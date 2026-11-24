@@ -53,6 +53,17 @@ namespace RevitThreeExport.Tests
                 {
                     { "source", "Revit" }, { "document", "Sintetički model" }, { "view", "Export" },
                     { "viewId", 4242L }, { "exportedAt", "2026-11-24 12:00" },
+                    {
+                        // survey coordinates as the exporter writes them: shared = origin + x·basisX + ...
+                        "sharedCoordinates", new JsonObject
+                        {
+                            { "location", "Gauss-Krüger 7" },
+                            { "origin", new[] { 6600000.0, 4700000.0, 100.0 } },
+                            { "basisX", new[] { 1.0, 0.0, 0.0 } },
+                            { "basisY", new[] { 0.0, 1.0, 0.0 } },
+                            { "basisZ", new[] { 0.0, 0.0, 1.0 } },
+                        }
+                    },
                 },
             };
             foreach (var m in Mats)

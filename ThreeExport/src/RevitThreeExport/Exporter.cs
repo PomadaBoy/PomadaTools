@@ -63,6 +63,8 @@ namespace RevitThreeExport
                     { "exportedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) },
                 },
             };
+            var shared = SharedCoordinates(doc);
+            if (shared != null) scene.RootExtras["sharedCoordinates"] = shared;
             scene.Materials.AddRange(ctx.Materials);
 
             var lastReport = -1000L;
@@ -124,6 +126,37 @@ namespace RevitThreeExport
             result.Seconds = clock.Elapsed.TotalSeconds;
             options.Progress?.Invoke("Done", 1, 1);
             return result;
+        }
+
+        /// <summary>
+        /// The project's shared (survey) coordinates, as a map from Revit internal metres:
+        /// shared = origin + x·basisX + y·basisY + z·basisZ. Null when they are the same as the
+        /// internal ones, or Revit can't say.
+        /// </summary>
+        private static JsonObject SharedCoordinates(Document doc)
+        {
+            try
+            {
+                var location = doc.ActiveProjectLocation;
+                if (location == null) return null;
+                // GetTotalTransform maps shared coordinates to internal ones
+                var t = location.GetTotalTransform().Inverse;
+                if (t.IsIdentity) return null;
+                const double ft = 0.3048;
+                double[] V(XYZ v) => new[] { v.X, v.Y, v.Z };
+                return new JsonObject
+                {
+                    { "location", location.Name },
+                    { "origin", new[] { t.Origin.X * ft, t.Origin.Y * ft, t.Origin.Z * ft } },
+                    { "basisX", V(t.BasisX) },
+                    { "basisY", V(t.BasisY) },
+                    { "basisZ", V(t.BasisZ) },
+                };
+            }
+            catch (Autodesk.Revit.Exceptions.ApplicationException)
+            {
+                return null;
+            }
         }
 
         private static ExportResult Cancel(ExportResult result, Stopwatch clock)
