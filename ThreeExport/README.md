@@ -34,6 +34,8 @@ Colours come from the materials, not from view overrides.
 | <kbd>F</kbd> / <kbd>Esc</kbd> | fit the selection / clear it |
 | **Hide / Isolate** | the bar at the clicked element (in the inspect sheet on phones). ▼ offers this element, same type, family, category or level. **Undo** and **Show all** appear under the tools |
 | <kbd>H</kbd><kbd>H</kbd> <kbd>H</kbd><kbd>I</kbd> <kbd>H</kbd><kbd>C</kbd> <kbd>I</kbd><kbd>C</kbd> <kbd>H</kbd><kbd>R</kbd> | Revit's keys: hide / isolate the element, hide / isolate its category, show all. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes |
+| **Cut** (same bar) | **Add cut**: a section plane on the clicked face, keeping what is behind it. **Box cut**: a section box around the element. Drag the orange arrows to move a plane or resize the box; the **Cuts** card under the tools has a slider, **Flip**, **Zoom to** and **Remove** |
+| **Measure** | **Point to point** (corners within 12 px snap; shows the distance and ΔX ΔY ΔZ), **3-axis laser** (from a surface to the nearest surfaces along Revit X, Y and Z), **Position** (Revit coordinates of a point). <kbd>Esc</kbd> drops a first point, then stops measuring |
 | Property row (hover, or tap on phones) | **Copy** the value, **Colour by** this parameter, **Filter on value** |
 | **Explode** | From centre, Vertical or By category, 0–100 %, **Reset** |
 | **Filter** | search, Category/Family/Type/Level/Material checkboxes, rules (equals, contains, >, ≥, has value …, combined with all/any), **Isolate / Ghost / Hide matching**, a list of the matching elements |
@@ -47,6 +49,11 @@ Numeric rules read the number at the start of a value, so `Volume > 8` matches
 **Filter on value** adds the rule *parameter equals value*; a second value of the same
 parameter replaces the first instead of matching nothing. Hide and isolate work on top of
 the filter: an element shows when the filter shows it and it is not hidden by hand.
+
+Measurements are in metres, between the points as built: measuring an exploded model gives
+the same numbers as before exploding. Positions are Revit's internal coordinates (from the
+internal origin), not shared or survey coordinates. Picking and measuring skip hidden,
+ghosted and cut-away parts.
 
 **Colour** gives the 8 most common values their own colours and the rest grey ("Other"),
 because more colours can't be told apart. Elements with no value are light grey. Material
@@ -77,11 +84,14 @@ RevitAPI.dll is never shipped: it comes from the reference-only
   gzip + base64 round trip, HTML streaming. Writes `tests/out/` (cube, synthetic model).
 - `viewer/test/glb.test.mjs`: the Khronos glTF validator and three's GLTFLoader on those files.
 - `viewer/test/logic.test.mjs`: filter operators, number parsing, explode offsets, colour
-  schemes (values, Other, ranges, codes).
+  schemes (values, Other, ranges, codes), cut and measure geometry (handle drag, clipping
+  side, Revit axes).
 - `viewer/test/viewer.test.mjs` (Playwright, headless Chromium, `file://`): loading, picking,
   explode and exact Reset, every operator, Isolate/Ghost/Hide, search, facets, the list,
   Copy IDs, Download .glb, hide/isolate from the bar and the keys, property row actions,
-  colour by (theme change included), and the layout on desktop and phone.
+  colour by (theme change included), cuts (picking through them, dragging the arrows),
+  measuring (corner snapping, exploded model, laser hits on element faces), and the layout
+  on desktop and phone.
 
 ## File format
 
@@ -116,3 +126,7 @@ family, type, level, mark, comments, volume_m3, materials, params, typeParams`, 
 - Very large models (several million triangles) make big files. Leave out rebar, or export
   a view with a section box.
 - The volume comes from the element's solids, or else the Revit volume parameter.
+- Cut faces are open, not filled: you look into the cut elements.
+- No 2D section drawing (Dalux's "2D cut").
+- Without a spatial index, each pick on a model of millions of triangles takes tens of
+  milliseconds; the measuring preview under the pointer updates at most every 50 ms.
