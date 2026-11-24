@@ -139,6 +139,20 @@ namespace RevitThreeExport
 
         public void OnViewEnd(ElementId elementId) { }
 
+        /// <summary>Reinforcement categories left out when ExportOptions.IncludeRebar is off.</summary>
+        private static readonly HashSet<long> RebarCategories = new HashSet<long>
+        {
+            (long)BuiltInCategory.OST_Rebar,
+            (long)BuiltInCategory.OST_AreaRein,
+            (long)BuiltInCategory.OST_PathRein,
+            (long)BuiltInCategory.OST_FabricReinforcement,
+            (long)BuiltInCategory.OST_FabricAreas,
+            (long)BuiltInCategory.OST_Coupler,
+        };
+
+        /// <summary>Elements left out because they are reinforcement.</summary>
+        public int SkippedRebar;
+
         public RenderNodeAction OnElementBegin(ElementId elementId)
         {
             try
@@ -149,6 +163,15 @@ namespace RevitThreeExport
                     _hostVisited++;
                     if (!_options.IncludeLinks && _host.GetElement(elementId) is RevitLinkInstance)
                         return RenderNodeAction.Skip;
+                }
+                if (!_options.IncludeRebar)
+                {
+                    var cat = frame.Doc.GetElement(elementId)?.Category;
+                    if (cat != null && RebarCategories.Contains(Ids.Of(cat.Id)))
+                    {
+                        SkippedRebar++;
+                        return RenderNodeAction.Skip;
+                    }
                 }
                 var idValue = Ids.Of(elementId);
                 var key = frame.IsLink ? frame.Key + ":" + idValue : idValue.ToString(System.Globalization.CultureInfo.InvariantCulture);

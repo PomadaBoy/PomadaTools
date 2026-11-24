@@ -2,7 +2,8 @@
 """Export the elements visible in a 3D view to one HTML file with a 3D viewer.
 
 The file opens by double-click in any browser, works offline and can be emailed.
-Click an element to see its parameters. Linked models are included.
+Click an element to see its parameters; explode the model and filter it by
+properties. Linked models are included; rebar is optional.
 The export is read-only: nothing in the model changes.
 Revit 2021-2024 use bin/net48, Revit 2025+ bin/net8.0-windows."""
 
@@ -25,6 +26,7 @@ CACHE_KEY = "PomadaTools.ThreeExport.Assembly"
 
 OPT_LINKS = "Include linked models"
 OPT_TYPES = "Include type parameters"
+OPT_REBAR = "Include rebar (large files)"
 OPT_OPEN = "Open the file when done"
 
 
@@ -74,6 +76,7 @@ def ask_options(cfg, view):
     switches = OrderedDict([
         (OPT_LINKS, cfg.get_option("links", True)),
         (OPT_TYPES, cfg.get_option("type_params", True)),
+        (OPT_REBAR, cfg.get_option("rebar", True)),
         (OPT_OPEN, cfg.get_option("open_file", True)),
     ])
     choice, chosen = forms.CommandSwitchWindow.show(
@@ -83,6 +86,7 @@ def ask_options(cfg, view):
         script.exit()
     cfg.links = bool(chosen.get(OPT_LINKS))
     cfg.type_params = bool(chosen.get(OPT_TYPES))
+    cfg.rebar = bool(chosen.get(OPT_REBAR))
     cfg.open_file = bool(chosen.get(OPT_OPEN))
     return chosen
 
@@ -117,6 +121,7 @@ def main():
     opts.OutputPath = path
     opts.IncludeLinks = bool(chosen.get(OPT_LINKS))
     opts.IncludeTypeParameters = bool(chosen.get(OPT_TYPES))
+    opts.IncludeRebar = bool(chosen.get(OPT_REBAR))
 
     started = time.time()
     with forms.ProgressBar(title="Export 3D HTML", cancellable=True) as pb:
@@ -147,6 +152,8 @@ def main():
     print(u"{:,} elements, {:,} triangles, {} materials".format(result.Elements, result.Triangles, result.Materials))
     if result.LinkElements:
         print(u"{:,} of the elements are from linked models".format(result.LinkElements))
+    if result.SkippedRebar:
+        print(u"{:,} reinforcement elements left out".format(result.SkippedRebar))
     print(u", ".join(u"{} {}".format(c, result.PerCategory[c]) for c in cats))
     print(u"{} file ({} model), {:.1f} s".format(size_text(result.FileBytes), size_text(result.GlbBytes),
                                                  time.time() - started))

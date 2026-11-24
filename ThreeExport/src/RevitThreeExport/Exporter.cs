@@ -37,6 +37,7 @@ namespace RevitThreeExport
             var exporter = new CustomExporter(doc, ctx) { IncludeGeometricObjects = false, ShouldStopOnError = false };
             RunExport(exporter, view);
             result.Warnings.AddRange(ctx.Warnings);
+            result.SkippedRebar = ctx.SkippedRebar;
             if (ctx.Cancelled) return Cancel(result, clock);
 
             // ---- metadata, in output order: category, then host before links, then id ----

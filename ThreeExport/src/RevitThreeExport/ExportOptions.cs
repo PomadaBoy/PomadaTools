@@ -14,6 +14,12 @@ namespace RevitThreeExport
         public bool IncludeTypeParameters = true;
 
         /// <summary>
+        /// Export reinforcement (rebar, area/path/fabric reinforcement, couplers). Rebar
+        /// is often most of a model's triangles, so leaving it out makes the file much smaller.
+        /// </summary>
+        public bool IncludeRebar = true;
+
+        /// <summary>
         /// Called with (phase, done, total) about ten times a second. Return false to cancel.
         /// From pyRevit a plain Python function can be assigned.
         /// </summary>

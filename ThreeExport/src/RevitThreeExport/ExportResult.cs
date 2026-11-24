@@ -14,6 +14,8 @@ namespace RevitThreeExport
         public string View;
         public int Elements;
         public int LinkElements;
+        /// <summary>Reinforcement elements left out (ExportOptions.IncludeRebar off).</summary>
+        public int SkippedRebar;
         public int Triangles;
         public int Vertices;
         public int Materials;
@@ -35,6 +37,7 @@ namespace RevitThreeExport
             }
             sb.AppendLine(string.Format(c, "{0:N0} elements, {1:N0} triangles, {2} materials", Elements, Triangles, Materials));
             if (LinkElements > 0) sb.AppendLine(string.Format(c, "{0:N0} of the elements are from linked models", LinkElements));
+            if (SkippedRebar > 0) sb.AppendLine(string.Format(c, "{0:N0} reinforcement elements left out", SkippedRebar));
             sb.AppendLine(string.Join(", ", PerCategory.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.CurrentCulture)
                 .Select(kv => kv.Key + " " + kv.Value.ToString(c))));
             sb.AppendLine(string.Format(c, "{0:0.0} MB file ({1:0.0} MB model), {2:0.0} s", FileBytes / 1048576.0, GlbBytes / 1048576.0, Seconds));
