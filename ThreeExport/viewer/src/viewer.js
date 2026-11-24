@@ -12,6 +12,9 @@ import {
   operatorNeedsValue, fieldValue,
 } from './filter.js';
 import { colourScheme, valueKey, SLOTS, BINS } from './colour.js';
+import { Cuts } from './cuts.js';
+import { Measure } from './measure.js';
+import { REVIT_AXES, snapNormal, nearestWithin, metres, toRevit } from './geom.js';
 
 const $ = (s) => document.querySelector(s);
 const viewport = $('#viewport');
@@ -37,11 +40,19 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(0.6, 1, 0.4);
 scene.add(sun);
 
+// drawn after the model and never cut: the grid, cut frames and handles, measurements
+const overlay = new THREE.Scene();
+const noPlanes = [];
+const marks = $('#marks');
+let measure = null;      // set up after loading (needs the model's Revit offset)
+const cuts = new Cuts(overlay, () => renderCuts());
+
 function resize() {
   const w = viewport.clientWidth, h = viewport.clientHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  measure?.setSize(w, h);
 }
 new ResizeObserver(resize).observe(viewport);
 
@@ -189,12 +200,12 @@ function applyTheme() {
   const css = getComputedStyle(document.documentElement);
   const major = css.getPropertyValue('--grid-major').trim() || '#b9c0ca';
   const minor = css.getPropertyValue('--grid-minor').trim() || '#d5dae1';
-  if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+  if (grid) { overlay.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
   grid = new THREE.GridHelper(gridSpec.size, gridSpec.cells, major, minor);
   grid.position.y = gridSpec.y;
   grid.material.transparent = true;
   grid.material.opacity = 0.85;
-  scene.add(grid);
+  overlay.add(grid);
   if (colour.scheme) refreshColourTheme();
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
@@ -203,10 +214,17 @@ new MutationObserver(applyTheme).observe(document.documentElement, { attributes:
 // ---------- camera fit ----------
 /** Current bounds: for the model, the shown (not ghosted) elements where they are now. */
 function boundsOf(obj) {
+  if (obj.isBox3) return obj.clone();
   if (obj !== model) return new THREE.Box3().setFromObject(obj);
   const b = new THREE.Box3();
   for (const e of elements) if (e.shown && !e.ghost) b.union(e.box0.clone().translate(e.offset));
-  return b.isEmpty() ? new THREE.Box3().setFromObject(model) : b;
+  if (b.isEmpty()) b.setFromObject(model);
+  // with a section box, what is left of the model is inside it
+  if (cuts.box) {
+    const inside = b.clone().intersect(cuts.box.box);
+    if (!inside.isEmpty()) return inside;
+  }
+  return b;
 }
 
 let flight = null;
@@ -282,24 +300,66 @@ const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 let selected = null;
 
-function elementAt(ev) {
+function rayFrom(ev) {
   const r = renderer.domElement.getBoundingClientRect();
   ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  // the raycaster also hits hidden objects: take the first element that is shown and not a ghost
+  return raycaster;
+}
+
+/**
+ * The first hit along the raycaster's ray on what can be seen: the raycaster also hits
+ * hidden, ghosted and cut-away geometry, so skip those. min: ignore hits closer than this.
+ */
+function firstHit(min = 0) {
   for (const hit of raycaster.intersectObject(model, true)) {
+    if (hit.distance < min) continue;
     let o = hit.object;
     while (o && !byObject.has(o)) o = o.parent;
     const e = o && byObject.get(o);
-    if (e && e.shown && !e.ghost) return { obj: o, point: hit.point };
+    if (e && e.shown && !e.ghost && cuts.isKept(hit.point)) {
+      // the face normal in world space, towards the viewer
+      const normal = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : new THREE.Vector3(0, 1, 0);
+      if (normal.dot(raycaster.ray.direction) > 0) normal.negate();
+      return { e, obj: o, mesh: hit.object, face: hit.face, point: hit.point.clone(), normal, distance: hit.distance };
+    }
   }
   return null;
 }
 
-/** Selects an element (or nothing). point: where it was clicked, for the Hide / Isolate bar. */
-function select(obj, point = null) {
+function elementAt(ev) {
+  rayFrom(ev);
+  const hit = firstHit();
+  return hit && { obj: hit.obj, point: hit.point, normal: hit.normal };
+}
+
+/** For measuring: the surface point under the pointer, or a corner of that face within 12 px. */
+function surfaceAt(ev) {
+  rayFrom(ev);
+  const hit = firstHit();
+  if (!hit) return null;
+  let point = hit.point, snapped = false;
+  if (hit.face) {
+    const pos = hit.mesh.geometry.attributes.position;
+    const corners = [hit.face.a, hit.face.b, hit.face.c].map((i) =>
+      new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(hit.mesh.matrixWorld));
+    const W = viewport.clientWidth, H = viewport.clientHeight;
+    const screen = corners.map((c) => {
+      if (!cuts.isKept(c)) return null;
+      const v = c.clone().project(camera);
+      return [((v.x + 1) / 2) * W, ((1 - v.y) / 2) * H];
+    });
+    const r = renderer.domElement.getBoundingClientRect();
+    const k = nearestWithin(screen, [ev.clientX - r.left, ev.clientY - r.top], 12);
+    if (k >= 0) { point = corners[k]; snapped = true; }
+  }
+  return { ...hit, hit: hit.point, point, snapped, anchor: { e: hit.e, local: point.clone().sub(hit.e.offset) } };
+}
+
+/** Selects an element (or nothing). point, normal: where it was clicked, for the Hide / Isolate / Cut bar. */
+function select(obj, point = null, normal = null) {
   if (selected === obj) {
-    if (obj && point) showPick(byObject.get(obj), point);
+    if (obj && point) showPick(byObject.get(obj), point, normal);
     return;
   }
   const prev = selected;
@@ -309,7 +369,7 @@ function select(obj, point = null) {
     const e = byObject.get(obj);
     paint(e);
     showPanel(obj);
-    showPick(e, point);
+    showPick(e, point, normal);
   } else {
     hidePanel();
     hidePick();
@@ -318,14 +378,61 @@ function select(obj, point = null) {
   markListSelection();
 }
 
+// Cut handles: grabbed before OrbitControls sees the pointer (capture on the parent)
+viewport.addEventListener('pointerdown', (ev) => {
+  if (!model || ev.button !== 0 || !cuts.count) return;
+  const h = cuts.handleAt(rayFrom(ev));
+  if (!h || !cuts.beginDrag(h, raycaster.ray)) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  viewport.setPointerCapture?.(ev.pointerId);
+  viewport.classList.add('dragging');
+}, { capture: true });
+viewport.addEventListener('pointermove', (ev) => {
+  if (cuts.drag) { cuts.dragTo(rayFrom(ev).ray); return; }
+  if (!ev.buttons) hoverAt = ev;   // handled once per frame; not while orbiting
+});
+const endDrag = (ev) => {
+  if (!cuts.drag) return;
+  cuts.endDrag();
+  viewport.releasePointerCapture?.(ev.pointerId);
+  viewport.classList.remove('dragging');
+};
+viewport.addEventListener('pointerup', endDrag);
+viewport.addEventListener('pointercancel', endDrag);
+viewport.addEventListener('pointerleave', () => { hoverAt = null; if (measureMode()) measure.preview(null); });
+
+/**
+ * Pointer moves: handle cursor, and the measuring preview. A raycast on a big model takes
+ * tens of milliseconds without a spatial index: at most one every 50 ms.
+ */
+let hoverAt = null, lastHover = 0;
+function hover() {
+  if (!hoverAt || !model || cuts.drag) return;
+  const now = performance.now();
+  if (now - lastHover < 50) return;   // keep the pointer position for a later frame
+  lastHover = now;
+  const ev = hoverAt;
+  hoverAt = null;
+  const onHandle = cuts.count > 0 && !!cuts.handleAt(rayFrom(ev));
+  viewport.classList.toggle('on-handle', onHandle);
+  if (measureMode()) {
+    const s = onHandle ? null : surfaceAt(ev);
+    measure.preview(s?.anchor ?? null, s?.snapped, mState.first);
+  }
+}
+
 let down = null;
 renderer.domElement.addEventListener('pointerdown', (ev) => { down = { x: ev.clientX, y: ev.clientY, t: performance.now() }; });
 renderer.domElement.addEventListener('pointerup', (ev) => {
   if (!down || !model || ev.button !== 0) return;
   const moved = Math.hypot(ev.clientX - down.x, ev.clientY - down.y);
   if (moved < 6 && performance.now() - down.t < 600) {
-    const hit = elementAt(ev);
-    select(hit?.obj ?? null, hit?.point);
+    if (measureMode()) measureClick(ev);
+    else {
+      const hit = elementAt(ev);
+      select(hit?.obj ?? null, hit?.point, hit?.normal);
+    }
   }
   down = null;
 });
@@ -353,6 +460,7 @@ window.addEventListener('keydown', (ev) => {
   if ((k === 'h' || k === 'i') && model) { chord = { key: k, t: performance.now() }; return; }
   if (k === 'Escape') {
     if (!pickMenu.hidden) closePickMenu(true);
+    else if (measureMode()) escapeMeasuring();
     else select(null);
   }
   if (k === 'f' && model) fit(selected ?? model);
@@ -368,11 +476,12 @@ const ICONS = {
   filter: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.2 7.4V19l-3.6-1.8v-4.8z"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
   hide: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/></svg>',
+  cut: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8.1 8.1 20 19M8.1 15.9 20 5"/></svg>',
   isolate: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="7" height="7" rx="1"/><path d="M3 7V4.5A1.5 1.5 0 0 1 4.5 3H7M17 3h2.5A1.5 1.5 0 0 1 21 4.5V7M21 17v2.5a1.5 1.5 0 0 1-1.5 1.5H17M7 21H4.5A1.5 1.5 0 0 1 3 19.5V17" stroke-dasharray="2 2.2"/></svg>',
 };
 // phones: Hide / Isolate in the inspect sheet (the floating bar has no room there)
-const SHEET_ACTIONS = '<div class="pactions">' + ['hide', 'isolate'].map((a) => {
-  const label = a === 'hide' ? 'Hide' : 'Isolate';
+const SHEET_ACTIONS = '<div class="pactions">' + ['hide', 'isolate', 'cut'].map((a) => {
+  const label = { hide: 'Hide', isolate: 'Isolate', cut: 'Cut' }[a];
   return `<div class="split"><button class="pk-main" type="button" data-act="${a}">${ICONS[a]}${label}</button>` +
     `<button class="pk-more" type="button" data-act="${a}" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to ${a}">▼</button></div>`;
 }).join('') + '</div>';
@@ -486,7 +595,8 @@ async function copyText(text) {
 // ---------- explode ----------
 const explode = { mode: 'centre', f: 0, anim: null };
 
-function place(e) { e.obj.position.copy(e.orig).add(e.offset); }
+let moved = false;        // explode moved elements this frame: measurements follow
+function place(e) { e.obj.position.copy(e.orig).add(e.offset); moved = true; }
 
 /** Moves every element towards its explode target (animated unless reduced motion). */
 function updateExplode(animate = true) {
@@ -646,7 +756,12 @@ const SCOPES = [
   { id: 'level', label: 'Same level', like: (x, e) => !!e.d.level && x.d.level === e.d.level, when: (e) => !!e.d.level },
 ];
 const alike = (e, scope) => elements.filter((x) => SCOPES.find((s) => s.id === scope).like(x, e));
+const CUT_OPTIONS = [
+  { id: 'plane', label: 'Add cut', title: 'A section plane on the clicked face; drag the arrow to move it' },
+  { id: 'box', label: 'Box cut', title: 'A section box around this element; drag the arrows to resize it' },
+];
 function runScope(action, scope, e) {
+  if (action === 'cut') { if (scope === 'box') boxCut(e); else planeCut(e); return; }
   const list = alike(e, scope);
   if (action === 'hide') hideElements(list); else isolateElements(list);
 }
@@ -657,8 +772,10 @@ const pickAt = new THREE.Vector3();     // the clicked point, without the explod
 const pickNdc = new THREE.Vector3();
 let pickSize = null;
 
-function showPick(e, point) {
+let pickNormal = null;                  // the clicked face's normal, towards the viewer
+function showPick(e, point, normal = null) {
   pickAt.copy(point ? point.clone().sub(e.offset) : e.center0);
+  pickNormal = point && normal ? normal.clone() : null;
   closePickMenu();
   pickBar.hidden = false;
   pickDot.hidden = false;
@@ -706,13 +823,15 @@ function placePick() {
 /** The menu of a ▼ button: this element, same type, family, category or level. */
 function openPickMenu(action, opener) {
   const e = byObject.get(selected);
-  const verb = action === 'hide' ? 'Hide' : 'Isolate';
-  pickMenu.innerHTML = SCOPES.filter((s) => !s.when || s.when(e)).map((s) => {
-    const n = s.id === 'element' ? 1 : alike(e, s.id).length;
-    const what = { type: e.d.type, family: e.d.family, category: e.d.category, level: e.d.level }[s.id];
-    return `<button type="button" role="menuitem" data-scope="${s.id}" title="${esc(verb)}${what ? `: ${esc(what)}` : ''}">` +
-      `<span>${esc(s.label)}</span><span class="n">${n}</span></button>`;
-  }).join('');
+  const verb = { hide: 'Hide', isolate: 'Isolate', cut: 'Cut' }[action];
+  pickMenu.innerHTML = action === 'cut'
+    ? CUT_OPTIONS.map((o) => `<button type="button" role="menuitem" data-scope="${o.id}" title="${esc(o.title)}"><span>${esc(o.label)}</span></button>`).join('')
+    : SCOPES.filter((s) => !s.when || s.when(e)).map((s) => {
+      const n = s.id === 'element' ? 1 : alike(e, s.id).length;
+      const what = { type: e.d.type, family: e.d.family, category: e.d.category, level: e.d.level }[s.id];
+      return `<button type="button" role="menuitem" data-scope="${s.id}" title="${esc(verb)}${what ? `: ${esc(what)}` : ''}">` +
+        `<span>${esc(s.label)}</span><span class="n">${n}</span></button>`;
+    }).join('');
   pickMenu.dataset.action = action;
   pickMenu.setAttribute('aria-label', `${verb}…`);
   for (const b of document.querySelectorAll('.pk-more')) b.setAttribute('aria-expanded', String(b === opener));
@@ -738,7 +857,7 @@ function setupPick() {
   document.addEventListener('click', (ev) => {
     const b = ev.target.closest('.pk-main[data-act], .pk-more[data-act]');
     if (!b || !selected) return;
-    if (b.classList.contains('pk-main')) runScope(b.dataset.act, 'element', byObject.get(selected));
+    if (b.classList.contains('pk-main')) runScope(b.dataset.act, b.dataset.act === 'cut' ? 'plane' : 'element', byObject.get(selected));
     else if (!pickMenu.hidden && b.getAttribute('aria-expanded') === 'true') closePickMenu();
     else openPickMenu(b.dataset.act, b);
   });
@@ -917,17 +1036,191 @@ function setupFilter() {
 }
 
 // ---------- tools ----------
+// opening the Measure panel starts measuring; closing it stops
+const PANEL_HOOKS = { measure: (open) => (open ? startMeasuring() : stopMeasuring()) };
+function setPanel(button, section, open) {
+  const was = !section.hidden;
+  section.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+  if (was !== open) PANEL_HOOKS[section.id]?.(open);
+}
 function togglePanel(button, section, open = section.hidden) {
   // phones have room for one tool panel at a time
   if (open && matchMedia('(max-width: 640px)').matches) {
     for (const b of document.querySelectorAll('#tools .tool[aria-controls]')) {
-      if (b === button) continue;
-      b.setAttribute('aria-expanded', 'false');
-      document.getElementById(b.getAttribute('aria-controls')).hidden = true;
+      if (b !== button) setPanel(b, document.getElementById(b.getAttribute('aria-controls')), false);
     }
   }
-  section.hidden = !open;
-  button.setAttribute('aria-expanded', String(open));
+  setPanel(button, section, open);
+}
+
+// ---------- cuts ----------
+/** Add cut: a plane on the clicked face that keeps what is behind it; from the list, a plan cut through the middle. */
+function planeCut(e) {
+  const size = THREE.MathUtils.clamp(e.box0.getSize(new THREE.Vector3()).length() * 1.2, 1, modelRadius * 1.5);
+  if (pickNormal) {
+    cuts.addPlane(pickAt.clone().add(e.offset), snapNormal(pickNormal).negate(), size);
+  } else {
+    cuts.addPlane(e.center0.clone().add(e.offset), new THREE.Vector3(0, -1, 0), size);
+  }
+}
+
+/** Box cut: a section box a little bigger than the element, and the view fitted to it. */
+function boxCut(e) {
+  const b = e.box0.clone().translate(e.offset);
+  b.expandByScalar(Math.max(b.getSize(new THREE.Vector3()).length() * 0.05, 0.05));
+  cuts.setBox(b);
+  fit(b);
+}
+
+let cutsKey = '';
+function renderCuts() {
+  const card = $('#cuts'), list = $('#cut-list');
+  card.hidden = !cuts.count;
+  const key = cuts.items.map((i) => i.id).join(',') + (cuts.box ? ',box' : '');
+  const range = Math.ceil(Math.max(modelRadius * 2, 1));   // whole metres: the 0.01 m steps count from it
+  if (key !== cutsKey) {
+    cutsKey = key;
+    list.innerHTML = cuts.items.map((item, n) =>
+      `<li data-id="${item.id}"><span class="cl">Cut ${n + 1}</span>` +
+      `<input type="range" min="${-range}" max="${range}" step="0.01" value="${item.offset}" aria-label="Move cut ${n + 1}">` +
+      `<output></output><button type="button" class="ghost" data-a="flip" title="Keep the other side">Flip</button>` +
+      `<button type="button" class="icon" data-a="remove" title="Remove this cut" aria-label="Remove cut ${n + 1}">×</button></li>`).join('') +
+      (cuts.box ? '<li data-id="box"><span class="cl">Box</span><span class="note">Drag the arrows to resize</span>' +
+        '<button type="button" class="ghost" data-a="fit">Zoom to</button>' +
+        '<button type="button" class="icon" data-a="remove" title="Remove the section box" aria-label="Remove the section box">×</button></li>' : '');
+  }
+  for (const item of cuts.items) {
+    const li = list.querySelector(`li[data-id="${item.id}"]`);
+    const input = li.querySelector('input');
+    if (document.activeElement !== input) input.value = String(item.offset);
+    li.querySelector('output').textContent = `${item.offset >= 0 ? '+' : '−'}${metres(Math.abs(item.offset))} m`;
+  }
+  $('#cut-count').textContent = cuts.count ? `${cuts.count}` : '';
+}
+
+function setupCuts() {
+  const list = $('#cut-list');
+  const itemOf = (li) => (li.dataset.id === 'box' ? cuts.box : cuts.items.find((i) => String(i.id) === li.dataset.id));
+  list.addEventListener('input', (ev) => {
+    const li = ev.target.closest('li');
+    const item = li && itemOf(li);
+    if (item?.kind === 'plane') cuts.setOffset(item, Number(ev.target.value));
+  });
+  list.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-a]');
+    const item = b && itemOf(b.closest('li'));
+    if (!item) return;
+    if (b.dataset.a === 'remove') cuts.remove(item);
+    else if (b.dataset.a === 'flip') cuts.flip(item);
+    else if (b.dataset.a === 'fit') fit(item.box);
+  });
+  $('#cut-clear').addEventListener('click', () => cuts.clear());
+}
+
+// ---------- measure ----------
+const mState = { mode: 'distance', active: false, first: null, note: '' };
+const measureMode = () => mState.active && !!measure;
+const MEASURE_NOTES = {
+  distance: 'Click two points. A corner within a few pixels is snapped to.',
+  distance2: 'Click the second point. Esc starts again.',
+  laser: 'Click a surface: the laser measures to the nearest surfaces along Revit X, Y and Z.',
+  point: 'Click a point for its Revit coordinates (metres, from the internal origin).',
+};
+
+function startMeasuring() {
+  mState.active = true;
+  mState.first = null;
+  mState.note = '';
+  viewport.classList.add('measuring');
+  syncMeasure();
+}
+function stopMeasuring() {
+  mState.active = false;
+  mState.first = null;
+  measure?.preview(null);
+  viewport.classList.remove('measuring');
+  syncMeasure();
+}
+function escapeMeasuring() {
+  if (mState.first) { mState.first = null; measure.preview(null); syncMeasure(); return; }
+  togglePanel($('#tb-measure'), $('#measure'), false);
+}
+
+function syncMeasure() {
+  for (const b of document.querySelectorAll('#m-mode button')) b.setAttribute('aria-pressed', String(mState.active && b.dataset.mode === mState.mode));
+  const key = mState.mode === 'distance' && mState.first ? 'distance2' : mState.mode;
+  $('#m-note').textContent = mState.note || MEASURE_NOTES[key];
+}
+
+function measureClick(ev) {
+  const s = surfaceAt(ev);
+  if (!s) return;
+  mState.note = '';
+  if (mState.mode === 'point') measure.addPoint(s.anchor);
+  else if (mState.mode === 'distance') {
+    if (!mState.first) { mState.first = s.anchor; syncMeasure(); return; }
+    measure.addDistance(mState.first, s.anchor);
+    mState.first = null;
+    measure.preview(null);
+  } else {
+    laser(s);
+  }
+  syncMeasure();
+  renderMeasures();
+}
+
+/** Rays along Revit X, Y and Z from the clicked surface; not into the surface itself. */
+function laser(s) {
+  if (explode.f > 0) { mState.note = 'Reset Explode first: the laser measures the model as built.'; return; }
+  const start = s.hit.clone();
+  const origin = start.clone().addScaledVector(s.normal, 0.002);   // just off the surface
+  const hits = [];
+  for (const [axis, dir] of Object.entries(REVIT_AXES)) {
+    for (const sign of [1, -1]) {
+      const d = dir.clone().multiplyScalar(sign);
+      if (d.dot(s.normal) < -0.5) continue;
+      raycaster.set(origin, d);
+      raycaster.far = modelRadius * 8;
+      const h = firstHit(0.001);
+      if (h) hits.push({ axis, sign, anchor: { e: h.e, local: h.point.clone().sub(h.e.offset) }, d: h.point.distanceTo(start) });
+    }
+  }
+  raycaster.far = Infinity;
+  if (!hits.length) { mState.note = 'Nothing along X, Y or Z from there: try a surface with something beside, above or below it.'; return; }
+  measure.addLaser({ e: s.e, local: start.clone().sub(s.e.offset) }, hits);
+}
+
+function renderMeasures() {
+  const list = $('#m-list');
+  list.innerHTML = measure.items.map((item, n) => {
+    const { title, detail } = measure.describe(item);
+    return `<li data-id="${item.id}"><span class="mn">${n + 1}</span><span class="mt"><b>${esc(title)}</b><span>${esc(detail)}</span></span>` +
+      `<button type="button" class="icon" title="Remove" aria-label="Remove measurement ${n + 1}">×</button></li>`;
+  }).join('');
+  $('#m-clear').disabled = !measure.items.length;
+}
+
+function setupMeasure() {
+  measure = new Measure(overlay, marks, () => docInfo.revitOffsetMetres);
+  measure.setSize(viewport.clientWidth, viewport.clientHeight);
+  for (const b of document.querySelectorAll('#m-mode button')) {
+    b.addEventListener('click', () => {
+      mState.mode = b.dataset.mode;
+      mState.first = null;
+      mState.note = '';
+      measure.preview(null);
+      if (!mState.active) startMeasuring(); else syncMeasure();
+    });
+  }
+  $('#m-list').addEventListener('click', (ev) => {
+    const li = ev.target.closest('button') && ev.target.closest('li');
+    const item = li && measure.items.find((i) => String(i.id) === li.dataset.id);
+    if (item) { measure.remove(item); renderMeasures(); }
+  });
+  $('#m-clear').addEventListener('click', () => { measure.clear(); renderMeasures(); });
+  renderMeasures();
+  syncMeasure();
 }
 
 // ---------- colour by parameter ----------
@@ -1103,12 +1396,15 @@ function setupTools() {
   setupFilter();
   setupColour();
   setupPick();
-  const tbExplode = $('#tb-explode'), tbFilter = $('#tb-filter'), tbColour = $('#tb-colour');
-  tbExplode.addEventListener('click', () => togglePanel(tbExplode, $('#explode')));
-  tbFilter.addEventListener('click', () => togglePanel(tbFilter, $('#filter')));
-  tbColour.addEventListener('click', () => togglePanel(tbColour, $('#colour')));
-  $('#f-close').addEventListener('click', () => togglePanel(tbFilter, $('#filter'), false));
-  $('#c-close').addEventListener('click', () => togglePanel(tbColour, $('#colour'), false));
+  setupCuts();
+  setupMeasure();
+  for (const b of document.querySelectorAll('#tools .tool[aria-controls]')) {
+    const section = document.getElementById(b.getAttribute('aria-controls'));
+    b.addEventListener('click', () => togglePanel(b, section));
+  }
+  $('#f-close').addEventListener('click', () => togglePanel($('#tb-filter'), $('#filter'), false));
+  $('#c-close').addEventListener('click', () => togglePanel($('#tb-colour'), $('#colour'), false));
+  $('#m-close').addEventListener('click', () => togglePanel($('#tb-measure'), $('#measure'), false));
   $('#tb-download').addEventListener('click', downloadGlb);
   $('#side').hidden = false;
 }
@@ -1125,8 +1421,21 @@ renderer.setAnimationLoop((now) => {
     if (flight.t >= 1) flight = null;
   }
   controls.update();
+  hover();
   placePick();
+  if (measure) {
+    if (moved) measure.refresh();
+    measure.place(camera, viewport.clientWidth, viewport.clientHeight);
+  }
+  moved = false;
+  cuts.scaleHandles(camera, viewport.clientHeight);
+  // the model with the cuts; then the grid, cut handles and measurements, uncut, on top
+  renderer.clippingPlanes = cuts.planes;
   renderer.render(scene, camera);
+  renderer.autoClear = false;
+  renderer.clippingPlanes = noPlanes;
+  renderer.render(overlay, camera);
+  renderer.autoClear = true;
 });
 
 // ---------- a small read-only API, for tests and the browser console ----------
@@ -1140,6 +1449,7 @@ window.viewer = {
     tones: colour.scheme ? [...new Set(e.meshes.map((m) => (colour.byMesh ? meshTone.get(m) : e.tone)))] : null,
     // the colours drawn now (sRGB hex), one per mesh
     colours: e.meshes.map((m) => `#${m.material.color.getHexString()}`),
+    box: (() => { const b = e.box0.clone().translate(e.offset); return [b.min.toArray(), b.max.toArray()]; })(),
   })),
   state: () => ({
     explode: { mode: explode.mode, amount: explode.f, animating: !!explode.anim },
@@ -1151,7 +1461,39 @@ window.viewer = {
       entries: colour.scheme.entries.map(({ label, tone, count }) => ({ label, tone, count })),
       tones: colour.tones,
     } : null,
+    cuts: {
+      planes: cuts.items.map((i) => ({ offset: i.offset, normal: i.normal.toArray(), constant: i.plane.constant })),
+      box: cuts.box ? [cuts.box.box.min.toArray(), cuts.box.box.max.toArray()] : null,
+    },
+    measure: { active: mState.active, mode: mState.mode, first: !!mState.first },
   }),
+  /** Measurements in Revit metres. */
+  measures: () => (measure ? measure.items.map((i) => ({
+    kind: i.kind, d: i.d ?? null, delta: i.delta ?? null, at: i.at ?? null, origin: i.origin ?? null, spans: i.spans ?? null,
+    points: i.anchors.map((a) => measure.revit(a)), text: measure.describe(i),
+  })) : []),
+  /** Screen position (client px) of a point in viewer space, and the Revit coordinates of it. */
+  project(p) {
+    const v = new THREE.Vector3(...p).project(camera);
+    const r = renderer.domElement.getBoundingClientRect();
+    return [r.left + ((v.x + 1) / 2) * r.width, r.top + ((1 - v.y) / 2) * r.height];
+  },
+  toRevit: (p) => toRevit(new THREE.Vector3(...p), docInfo.revitOffsetMetres),
+  /** Screen positions of the cut arrows: { kind: 'plane' | 'box', axis, side, at }. */
+  handles() {
+    const out = [];
+    const r = renderer.domElement.getBoundingClientRect();
+    const scr = (h) => {
+      const v = h.getWorldPosition(new THREE.Vector3()).project(camera);
+      return [r.left + ((v.x + 1) / 2) * r.width, r.top + ((1 - v.y) / 2) * r.height];
+    };
+    cuts.items.forEach((i) => out.push({ kind: 'plane', at: scr(i.handle) }));
+    cuts.box?.handles.forEach((h) => {
+      const { axis, side } = h.userData.grab.userData.handle;
+      out.push({ kind: 'box', axis, side, at: scr(h) });
+    });
+    return out;
+  },
   /** Screen position (client px) of an element's current centre. */
   screenPoint(id) {
     const e = elements.find((x) => x.d.id === id);

@@ -548,6 +548,269 @@ test('Colour by: values, Other, number range, material per part, legend, theme a
   await page.close();
 });
 
+// ---------- cuts ----------
+const cutState = async (page) => (await state(page)).cuts;
+/** Where along its axis a square plane sits: n·p + c = 0. */
+const planeAt = (p) => { const k = p.normal.findIndex((v) => Math.abs(v) === 1); return { k, v: -p.constant / p.normal[k] }; };
+
+test('Cut: Add cut on the clicked face, move it, Flip and Remove; clicks skip what is cut away', async () => {
+  const { page, errors } = await open();
+  const box = await page.locator('#viewport canvas').boundingBox();
+  const at = [box.x + box.width * 0.3, box.y + box.height * 0.55];
+  await page.mouse.click(...at);
+  const wall = (await state(page)).selected;
+  assert.ok(wall, 'clicked an element');
+  const el = (await els(page)).find((e) => e.id === wall);
+  await page.click('#pk-cut');
+  let c = await cutState(page);
+  assert.equal(c.planes.length, 1);
+  assert.ok(await page.isVisible('#cuts'));
+  // a square plane on one face of the clicked element, keeping what is behind that face
+  const { k, v } = planeAt(c.planes[0]);
+  assert.ok(k >= 0, `square normal ${c.planes[0].normal}`);
+  assert.ok([el.box[0][k], el.box[1][k]].some((f) => Math.abs(f - v) < 1e-6), `plane at ${v}, element ${el.box[0][k]}..${el.box[1][k]}`);
+  assert.equal(c.planes[0].offset, 0);
+
+  // again from near one end of that face, so the arrow (where the face was clicked) is away
+  // from the point used to check picking, near the other end
+  await page.click('#cut-list [data-a="remove"]');
+  const onFace = (frac) => {
+    const p = [0, 1, 2].map((i) => (el.box[0][i] + el.box[1][i]) / 2);
+    const j = k === 0 ? 2 : 0;
+    p[k] = v;
+    p[j] = el.box[0][j] + frac * (el.box[1][j] - el.box[0][j]);
+    return p;
+  };
+  await page.keyboard.press('Escape');
+  await page.mouse.click(...(await page.evaluate((p) => window.viewer.project(p), onFace(0.15))));
+  assert.equal((await state(page)).selected, wall);
+  await page.click('#pk-cut');
+  const mid = await page.evaluate((p) => window.viewer.project(p), onFace(0.75));
+  const [h] = await page.evaluate(() => window.viewer.handles());
+  assert.ok(Math.hypot(mid[0] - h.at[0], mid[1] - h.at[1]) > 40, 'checking away from the arrow');
+
+  // move it through the element: clicking there no longer finds it
+  const thickness = el.box[1][k] - el.box[0][k];
+  await page.locator('#cut-list input[type="range"]').fill(String(thickness + 0.5));
+  c = await cutState(page);
+  assert.ok(Math.abs(c.planes[0].offset - (thickness + 0.5)) < 1e-9);
+  assert.match(await page.textContent('#cut-list output'), /^\+\d+\.\d{3} m$/);
+  await page.evaluate(() => document.activeElement.blur());
+  await page.keyboard.press('Escape');
+  await page.mouse.click(...mid);
+  assert.notEqual((await state(page)).selected, wall, 'the cut-away element is not picked');
+
+  // Flip keeps the other side: the element is back
+  await page.click('#cut-list [data-a="flip"]');
+  c = await cutState(page);
+  assert.ok(Math.abs(c.planes[0].offset + thickness + 0.5) < 1e-9);
+  await page.keyboard.press('Escape');
+  await page.mouse.click(...mid);
+  assert.equal((await state(page)).selected, wall);
+
+  await page.click('#cut-list [data-a="remove"]');
+  assert.equal((await cutState(page)).planes.length, 0);
+  assert.ok(await page.isHidden('#cuts'));
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('Cut: dragging the arrow moves the plane and does not orbit', async () => {
+  const { page } = await open();
+  const box = await page.locator('#viewport canvas').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.55);
+  await page.click('#pk-cut');
+  const ref = (await els(page))[0].id;
+  const before = await page.evaluate((id) => window.viewer.screenPoint(id), ref);
+  const [h] = await page.evaluate(() => window.viewer.handles());
+  await page.mouse.move(...h.at);
+  await page.mouse.down();
+  await page.mouse.move(h.at[0] + 50, h.at[1] - 30, { steps: 5 });
+  await page.mouse.move(h.at[0] + 100, h.at[1] - 60, { steps: 5 });
+  await page.mouse.up();
+  const c = await cutState(page);
+  assert.ok(Math.abs(c.planes[0].offset) > 0.5, `moved ${c.planes[0].offset}`);
+  assert.deepEqual(await page.evaluate((id) => window.viewer.screenPoint(id), ref), before, 'the camera did not move');
+  await page.close();
+});
+
+test('Cut: Box cut around an element; arrows resize the box; Remove all', async () => {
+  const { page, errors } = await open();
+  const column = (await els(page)).find((e) => e.category === 'Structural Columns');
+  await selectById(page, column.id);
+  await page.click('#pick .pk-more[data-act="cut"]');
+  assert.deepEqual(await page.$$eval('#pk-menu button', (b) => b.map((x) => x.textContent)), ['Add cut', 'Box cut']);
+  await page.click('#pk-menu [data-scope="box"]');
+  let c = await cutState(page);
+  for (let k = 0; k < 3; k++) {
+    assert.ok(c.box[0][k] < column.box[0][k] && c.box[1][k] > column.box[1][k], `box contains the column on axis ${k}`);
+    assert.ok(column.box[0][k] - c.box[0][k] < 1, 'only a little bigger');
+  }
+  assert.equal((await page.evaluate(() => window.viewer.handles())).length, 6);
+  assert.match(await page.textContent('#cut-list'), /Box/);
+
+  // drag the top arrow up
+  await page.waitForTimeout(100);
+  const top = (await page.evaluate(() => window.viewer.handles())).find((h) => h.axis === 'y' && h.side === 'max');
+  const ref = await page.evaluate((id) => window.viewer.screenPoint(id), column.id);
+  await page.mouse.move(...top.at);
+  await page.mouse.down();
+  await page.mouse.move(top.at[0], top.at[1] - 40, { steps: 8 });
+  await page.mouse.up();
+  const after = await cutState(page);
+  assert.ok(after.box[1][1] > c.box[1][1] + 0.1, `top moved up: ${c.box[1][1]} -> ${after.box[1][1]}`);
+  assert.deepEqual(after.box[0], c.box[0], 'the other faces stay');
+  assert.deepEqual(await page.evaluate((id) => window.viewer.screenPoint(id), column.id), ref, 'no orbit while dragging');
+
+  await page.click('#cut-clear');
+  c = await cutState(page);
+  assert.deepEqual([c.planes.length, c.box], [0, null]);
+  assert.equal((await page.evaluate(() => window.viewer.handles())).length, 0);
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+// ---------- measure ----------
+/** Screen point a few pixels inside a corner of an element's top face, towards the face centre. */
+async function nearCorner(page, corner, centre) {
+  const [c, m] = await Promise.all([corner, centre].map((p) => page.evaluate((q) => window.viewer.project(q), p)));
+  const d = Math.hypot(m[0] - c[0], m[1] - c[1]);
+  return [c[0] + ((m[0] - c[0]) / d) * 5, c[1] + ((m[1] - c[1]) / d) * 5];
+}
+const topCorners = (e) => {
+  const [lo, hi] = e.box;
+  return { a: [lo[0], hi[1], hi[2]], b: [hi[0], hi[1], hi[2]], centre: [(lo[0] + hi[0]) / 2, hi[1], (lo[2] + hi[2]) / 2] };
+};
+const near = (a, b, eps = 1e-6) => a.every((v, i) => Math.abs(v - b[i]) < eps);
+// the roof slab nearest the viewer, on the right: clear of the cards on the left, also when exploded
+const frontRoof = (all) => all.filter((e) => e.category === 'Roofs')
+  .sort((p, q) => q.box[1][2] - p.box[1][2] || q.box[0][0] - p.box[0][0])[0];
+
+test('Measure: point to point snaps to corners; the numbers stay real while exploded', async () => {
+  const { page, errors } = await open();
+  const roof = frontRoof(await els(page));
+  let { a, b, centre } = topCorners(roof);
+  await page.click('#tb-measure');
+  assert.equal((await state(page)).measure.active, true);
+  assert.equal(await page.getAttribute('#m-mode [data-mode="distance"]', 'aria-pressed'), 'true');
+
+  const measureCorners = async () => {
+    const p = await nearCorner(page, a, centre), q = await nearCorner(page, b, centre);
+    await page.mouse.click(...p);
+    assert.equal((await state(page)).measure.first, true);
+    await page.mouse.move(q[0], q[1] + 1);
+    await page.mouse.move(...q);
+    await page.waitForSelector('.mlabel.live');
+    await page.mouse.click(...q);
+    return (await page.evaluate(() => window.viewer.measures())).at(-1);
+  };
+  let m = await measureCorners();
+  assert.equal(m.kind, 'distance');
+  const ra = await page.evaluate((p) => window.viewer.toRevit(p), a);
+  const rb = await page.evaluate((p) => window.viewer.toRevit(p), b);
+  assert.ok(near(m.points[0], ra) && near(m.points[1], rb), `snapped to the corners: ${m.points}`);
+  assert.ok(Math.abs(m.d - 10) < 1e-6, `one bay: ${m.d}`);
+  assert.equal(m.text.title, '10.000 m');
+  assert.equal(m.text.detail, 'ΔX 10.000 · ΔY 0.000 · ΔZ 0.000');
+  assert.equal(await page.locator('#m-list li').count(), 1);
+  assert.equal(await page.locator('.mlabel.live').count(), 0, 'no rubber band after the second point');
+
+  // explode: the roof rises, its corners are picked where they are drawn, the numbers stay the same
+  await page.click('#tb-explode');
+  await page.click('#explode-mode [data-mode="vertical"]');
+  await page.fill('#explode-amount', '40');
+  await page.click('#tb-explode');
+  await page.click('#fit');
+  await page.waitForTimeout(700);
+  if (await page.isHidden('#measure')) await page.click('#tb-measure');
+  assert.equal((await state(page)).measure.active, true);
+  const moved = (await els(page)).find((e) => e.id === roof.id);
+  assert.ok(moved.box[1][1] > roof.box[1][1] + 1, 'the roof was moved up');
+  ({ a, b, centre } = topCorners(moved));
+  m = await measureCorners();
+  assert.ok(near(m.points[0], ra) && near(m.points[1], rb), 'Revit coordinates of the unexploded corners');
+  assert.ok(Math.abs(m.d - 10) < 1e-6);
+
+  // Esc drops a first point, then stops measuring
+  await page.mouse.click(...(await nearCorner(page, a, centre)));
+  assert.equal((await state(page)).measure.first, true);
+  await page.keyboard.press('Escape');
+  assert.deepEqual([(await state(page)).measure.first, (await state(page)).measure.active], [false, true]);
+  await page.keyboard.press('Escape');
+  assert.equal((await state(page)).measure.active, false);
+  assert.ok(await page.isHidden('#measure'));
+  // the measurements stay on screen
+  assert.equal(await page.locator('#marks .mlabel').count(), 2);
+  await page.click('#tb-measure');
+  await page.click('#m-clear');
+  assert.equal((await page.evaluate(() => window.viewer.measures())).length, 0);
+  assert.equal(await page.locator('#marks .mlabel').count(), 0);
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('Measure: position marker gives Revit coordinates; the laser stops at the nearest surfaces', async () => {
+  const { page, errors } = await open();
+  const all = await els(page);
+  const roof = frontRoof(all);
+  const { a, centre } = topCorners(roof);
+  await page.click('#tb-measure');
+  await page.click('#m-mode [data-mode="point"]');
+  await page.mouse.click(...(await nearCorner(page, a, centre)));
+  const p = (await page.evaluate(() => window.viewer.measures()))[0];
+  assert.equal(p.kind, 'point');
+  // the synthetic building's grid: 11985 + 10 k, 7985 + 10 k; roof top at 16 m
+  assert.ok([11985, 11995, 12005, 12015].some((x) => Math.abs(p.at[0] - x) < 1e-6), `X ${p.at[0]}`);
+  assert.ok([7985, 7995, 8005, 8015].some((y) => Math.abs(p.at[1] - y) < 1e-6), `Y ${p.at[1]}`);
+  assert.ok(Math.abs(p.at[2] - 16) < 1e-6, `Z ${p.at[2]}`);
+  assert.match(await page.textContent('#marks .mpos'), /^X 1\d,\d{3}\.\d{3}\nY \d,\d{3}\.\d{3}\nZ 16\.000$/);
+
+  // laser from the top floor with the roofs hidden: walls, columns and furniture around, nothing above
+  await page.click('#m-close');
+  await selectById(page, roof.id);
+  await page.evaluate(() => document.activeElement.blur());
+  await page.keyboard.press('h');
+  await page.keyboard.press('c');
+  assert.equal((await els(page)).filter((e) => e.category === 'Roofs' && e.shown).length, 0);
+  await page.click('#tb-measure');
+  await page.click('#m-mode [data-mode="laser"]');
+  const floorTop = Math.max(...all.filter((x) => x.category === 'Floors').map((x) => x.box[1][1]));
+  const floors = all.filter((e) => e.category === 'Floors' && Math.abs(e.box[1][1] - floorTop) < 1e-6);
+  let laser = null;
+  for (const f of floors) {
+    const mid = [(f.box[0][0] + f.box[1][0]) / 2, f.box[1][1], (f.box[0][2] + f.box[1][2]) / 2];
+    await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), mid)));
+    laser = (await page.evaluate(() => window.viewer.measures())).filter((m) => m.kind === 'laser').at(-1);
+    if (laser && Math.abs(laser.origin[2] - 12) < 1e-6) break;
+    laser = null;
+  }
+  assert.ok(laser, 'a laser from the top of a top floor slab');
+  assert.equal(laser.spans.Z.plus, null, 'roofs hidden: nothing above');
+  assert.equal(laser.spans.Z.minus, null, 'not down into the clicked slab');
+  const revitBoxes = await page.evaluate(() => window.viewer.elements().filter((e) => e.shown).map((e) => {
+    const lo = window.viewer.toRevit(e.box[0]), hi = window.viewer.toRevit(e.box[1]);
+    return [lo.map((v, i) => Math.min(v, hi[i])), lo.map((v, i) => Math.max(v, hi[i]))];
+  }));
+  const hits = laser.points.slice(1);
+  assert.ok(hits.length >= 2, `${hits.length} hits`);
+  for (const h of hits) {
+    // along one axis from the start point (2 mm above the slab for the horizontal rays)
+    const off = h.map((v, i) => Math.abs(v - laser.origin[i]));
+    assert.equal(off.filter((d) => d > 3e-3).length, 1, `one axis: ${off}`);
+    // on a face of an element that is shown
+    assert.ok(revitBoxes.some(([lo, hi]) => h.every((v, i) => v >= lo[i] - 1e-6 && v <= hi[i] + 1e-6)
+      && h.some((v, i) => Math.abs(v - lo[i]) < 1e-6 || Math.abs(v - hi[i]) < 1e-6)), `hit ${h} on an element face`);
+  }
+  for (const axis of ['X', 'Y']) {
+    const s = laser.spans[axis];
+    if (s.plus != null && s.minus != null) assert.ok(Math.abs(s.span - s.plus - s.minus) < 1e-9);
+    assert.ok(s.span == null || s.span <= 31, `${axis} span inside the building`);
+  }
+  assert.match(await page.textContent('#m-list'), /Laser/);
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
 const overlap = (a, b) => a && b && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
 test('panels do not overlap the inspect panel (desktop and phone)', async () => {
