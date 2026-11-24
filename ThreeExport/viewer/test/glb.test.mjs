@@ -72,5 +72,6 @@ test('synthetic model counts match what the C# writer reported', async () => {
   assert.deepEqual(perCat, stats.perCategory);
   assert.equal(tris, stats.triangles);
   const size = new THREE.Box3().setFromObject(gltf.scene).getSize(new THREE.Vector3());
-  assert.ok(size.y > 15 && size.y < 17, `height ${size.y}`);   // 4 storeys of 4 m, Revit Z -> glTF Y
+  // 4 storeys of 4 m, and the linked foundations from 1.5 m below: Revit Z -> glTF Y
+  assert.ok(Math.abs(size.y - 17.5) < 0.01, `height ${size.y}`);
 });
