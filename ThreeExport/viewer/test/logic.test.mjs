@@ -153,3 +153,117 @@ test('explode offsets', () => {
   const k = explodeOffsets(items, 'category', 1, 20);
   assert.deepEqual(k.map((o) => o[1]), [0, 0, 20, 10, 0]);
 });
+
+// ---------- colour by parameter ----------
+import { colourScheme, valueKey, numberOf, formatBound, SLOTS, BINS, OTHER, NOT_A_NUMBER } from '../src/colour.js';
+
+const tones = (s) => s.entries.map((e) => e.tone);
+const labels = (s) => s.entries.map((e) => e.label);
+
+test('valueKey: arrays joined, empty and missing are (none)', () => {
+  assert.equal(valueKey('  Nula '), 'Nula');
+  assert.equal(valueKey(8.53), '8.53');
+  assert.equal(valueKey(null), NONE);
+  assert.equal(valueKey(''), NONE);
+  assert.equal(valueKey(['Kulir', '', 'Beton']), 'Kulir, Beton');
+  assert.equal(valueKey([]), NONE);
+});
+
+test('values: one colour per value in natural order, (none) last and grey', () => {
+  const s = colourScheme(['Zid', 'Ploča', 'Zid', null, 'Krov', 'Zid', '']);
+  assert.equal(s.kind, 'values');
+  assert.deepEqual(labels(s), ['Krov', 'Ploča', 'Zid', NONE]);
+  assert.deepEqual(tones(s), ['s1', 's2', 's3', 'none']);
+  assert.deepEqual(s.entries.map((e) => e.count), [1, 1, 3, 2]);
+  assert.equal(s.entries[s.entryOf('Zid')].tone, 's3');
+  assert.equal(s.entries[s.entryOf(NONE)].label, NONE);
+  assert.equal(s.canRange, false);
+});
+
+test(`values: the ${SLOTS} most common get colours, the rest fold into Other`, () => {
+  // v1 x10, v2 x9 ... v12 x1 (a numbered name, so natural order is v1, v2 ... v10)
+  const items = [];
+  for (let i = 1; i <= 12; i++) for (let k = 0; k <= 12 - i; k++) items.push(`v${i}`);
+  const s = colourScheme(items, 'values');
+  assert.equal(s.entries.length, SLOTS + 1);
+  assert.deepEqual(labels(s).slice(0, SLOTS), ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8']);
+  assert.deepEqual(tones(s), ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 'other']);
+  const other = s.entries.at(-1);
+  assert.equal(other.label, OTHER);
+  assert.deepEqual(other.keys.map((k) => k.label), ['v9', 'v10', 'v11', 'v12']);
+  assert.equal(other.count, 4 + 3 + 2 + 1);
+  assert.equal(s.entries[s.entryOf('v11')].tone, 'other');
+  // the colours follow the values, not the order they came in
+  const again = colourScheme([...items].reverse(), 'values');
+  assert.deepEqual(again.entries.map((e) => [e.label, e.tone]), s.entries.map((e) => [e.label, e.tone]));
+});
+
+test('several values per element (materials) count each element once', () => {
+  const s = colourScheme([['Beton', 'Keramika'], ['Beton'], ['Kulir'], []]);
+  assert.deepEqual(labels(s), ['Beton', 'Keramika', 'Kulir', NONE]);
+  assert.deepEqual(s.entries.map((e) => e.count), [2, 1, 1, 1]);
+});
+
+test('numberOf: numbers with units are numbers; codes and sizes are text', () => {
+  for (const [v, n] of [['8.53 m³', 8.53], ['1,5', 1.5], ['-3', -3], ['25.0280', 25.028], ['1 234,5 kN', 1234.5],
+    ['1,234.5', 1234.5], ['30 %', 30], ['.5', 0.5], ['841.641 m³', 841.641], ['13.8000', 13.8]]) {
+    assert.equal(numberOf(v), n, v);
+  }
+  for (const v of ['5.1.3', '25 x 40', '400 x 800mm', 'HEB 300', 'M-7', '2.2a1', '']) assert.ok(Number.isNaN(numberOf(v)), v);
+});
+
+test('range: one big element does not squeeze everything into one step', () => {
+  // 140 small volumes and two huge ones, like a bridge with abutments
+  const items = [...Array.from({ length: 140 }, (_, i) => `${(0.5 + i * 0.25).toFixed(2)} m³`), '600 m³', '841.641 m³'];
+  const s = colourScheme(items, 'range', 'en-US');
+  assert.equal(s.entries.length, BINS);
+  for (const e of s.entries) assert.ok(e.count >= 30 && e.count <= 40, `${e.label}: ${e.count}`);
+  assert.equal(s.entries.at(-1).hi, 841.641);
+  assert.equal(s.entries[s.entryOf('841.641 m³')].tone, 'q4');
+});
+
+test('range: few different numbers give fewer steps, still light to dark', () => {
+  const s = colourScheme(['1', '1', '1', '1', '1', '1', '2', '2'], 'range', 'en-US');
+  assert.deepEqual(labels(s), ['1', '2']);
+  assert.deepEqual(tones(s), ['q1', 'q4']);
+  assert.deepEqual(s.entries.map((e) => e.count), [6, 2]);
+});
+
+test('BOQ positions such as 5.1.3 are codes: shown as values, not a range', () => {
+  const items = ['2.2', '2.2', '5.1.3', '5.1.4', '2.10', '3.1', '3.2', '4.1', '4.2', '4.3', '6.1.1'];
+  const s = colourScheme(items);
+  assert.equal(s.kind, 'values');
+  assert.ok(labels(s).includes('5.1.3'));
+});
+
+test(`range: numbers in up to ${BINS} steps, with the unit and decimal commas`, () => {
+  const items = ['0 m³', '2,5 m³', '5 m³', '7.5 m³', '10 m³', '10 m³', '1 m³', '3 m³', '6 m³', null];
+  const s = colourScheme(items, 'range', 'en-US');
+  assert.equal(s.kind, 'range');
+  assert.deepEqual(labels(s), ['0 – 1 m³', '2.5 – 3 m³', '5 – 6 m³', '7.5 – 10 m³', NONE]);
+  assert.deepEqual(tones(s), ['q1', 'q2', 'q3', 'q4', 'none']);
+  // lower bound included; the largest value goes in the last step
+  assert.deepEqual(s.entries.map((e) => e.count), [2, 2, 2, 3, 1]);
+  assert.equal(s.entries[s.entryOf('2,5 m³')].tone, 'q2');
+  assert.equal(s.entries[s.entryOf('10 m³')].tone, 'q4');
+});
+
+test('auto: numbers with many values are a range; few values, codes or text stay values', () => {
+  const many = Array.from({ length: 20 }, (_, i) => `${(i * 0.37).toFixed(2)} m`);
+  assert.equal(colourScheme(many).kind, 'range');
+  assert.equal(colourScheme(['2.1', '2.2', '2.10', '3']).kind, 'values');      // BOQ positions
+  assert.equal(colourScheme(['2.1', '2.2', '2.10', '3']).canRange, true);
+  assert.equal(colourScheme([...many, 'n/a']).kind, 'values');                  // not all numbers
+  const forced = colourScheme([...many, 'n/a'], 'range', 'en-US');
+  assert.equal(forced.kind, 'range');
+  assert.equal(forced.entries.at(-1).label, NOT_A_NUMBER);
+  assert.equal(forced.entries.at(-1).tone, 'other');
+  // a range needs two different numbers
+  assert.equal(colourScheme(['5', '5', 'x'], 'range').kind, 'values');
+});
+
+test('range labels keep enough decimals to tell steps apart', () => {
+  assert.equal(formatBound(0.123456, 0.01, 'en-US'), '0.123');
+  assert.equal(formatBound(1234.5, 300, 'en-US'), '1,235');
+  assert.equal(formatBound(2.5, 2.5, 'en-US'), '2.5');
+});
