@@ -65,6 +65,53 @@ export function nearestWithin(points, at, px) {
   return best;
 }
 
+/**
+ * The direction of the clicked face's edge nearest to p: the laser measures along and square
+ * to it, so it follows the element, not the project grid.
+ *   corners(i) -> Vector3   the i-th triangle corner of the mesh, in world space
+ *   count                   number of corners (3 per triangle)
+ *   n, p                    the face's unit normal and the clicked point
+ * The face is every triangle of the mesh in the clicked plane; its edges are the triangle
+ * edges used once (shared ones are diagonals inside the face). Edges shorter than a fifth of
+ * the longest are skipped, so a small notch or chamfer doesn't decide. null when none is found.
+ */
+export function faceEdgeDirection(corners, count, n, p, planeTol = 1e-3) {
+  const key = (v) => `${Math.round(v.x * 1e4)},${Math.round(v.y * 1e4)},${Math.round(v.z * 1e4)}`;
+  const edges = new Map();
+  const e1 = new Vector3(), e2 = new Vector3(), tn = new Vector3();
+  for (let i = 0; i + 2 < count; i += 3) {
+    const a = corners(i), b = corners(i + 1), c = corners(i + 2);
+    tn.crossVectors(e1.subVectors(b, a), e2.subVectors(c, a));
+    const len = tn.length();
+    if (len < 1e-12) continue;
+    if (Math.abs(tn.dot(n)) / len < 0.9995) continue;                  // not parallel to the face
+    if (Math.abs(n.dot(e1.subVectors(a, p))) > planeTol) continue;     // another plane
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const ku = key(u), kv = key(v);
+      const k = ku < kv ? `${ku}|${kv}` : `${kv}|${ku}`;
+      const edge = edges.get(k);
+      if (edge) edge.count++; else edges.set(k, { count: 1, u: u.clone(), v: v.clone() });
+    }
+  }
+  const outline = [...edges.values()].filter((e) => e.count === 1);
+  if (!outline.length) return null;
+  const longest = Math.max(...outline.map((e) => e.u.distanceTo(e.v)));
+  let best = null, bestD = Infinity;
+  const q = new Vector3(), d = new Vector3();
+  for (const e of outline) {
+    const len = e.u.distanceTo(e.v);
+    if (len < longest * 0.2) continue;
+    // distance from p to the segment
+    d.subVectors(e.v, e.u);
+    const t = Math.max(0, Math.min(1, q.subVectors(p, e.u).dot(d) / d.lengthSq()));
+    const dist = q.copy(e.u).addScaledVector(d, t).distanceTo(p);
+    if (dist < bestD) { bestD = dist; best = e; }
+  }
+  const dir = new Vector3().subVectors(best.v, best.u);
+  dir.addScaledVector(n, -dir.dot(n));                                 // in the face plane
+  return dir.lengthSq() > 1e-12 ? dir.normalize() : null;
+}
+
 /** True when every clipping plane keeps the point (three.js clips negative distances). */
 export function keptBy(planes, p, eps = 1e-4) {
   for (const pl of planes) if (pl.distanceToPoint(p) < -eps) return false;

@@ -326,3 +326,21 @@ test('toShared: survey coordinates from the exporter map, rotation included', as
   assert.deepEqual(toShared([0, 10, 0], turned), [90, 200, 5]);
   assert.equal(toShared([1, 2, 3], undefined), null);
 });
+
+test('faceEdgeDirection: the laser follows the element, not the grid', async () => {
+  const { faceEdgeDirection } = await import('../src/geom.js');
+  // a pad 3 x 1.5 m turned 25° in plan, top face at y = 0 (viewer axes, y up), as two
+  // triangles, plus a side face that must be ignored
+  const ang = (25 * Math.PI) / 180;
+  const at = (u, v, y = 0) => new Vector3(u * Math.cos(ang) - v * Math.sin(ang), y, u * Math.sin(ang) + v * Math.cos(ang));
+  const c = [at(-1.5, -0.75), at(1.5, -0.75), at(1.5, 0.75), at(-1.5, 0.75)];
+  const tris = [c[0], c[1], c[2], c[0], c[2], c[3], at(-1.5, -0.75, -1.2), at(1.5, -0.75, -1.2), c[1]];
+  const dir = (p) => faceEdgeDirection((i) => tris[i], tris.length, new Vector3(0, 1, 0), p);
+  const long = new Vector3(Math.cos(ang), 0, Math.sin(ang));
+  // clicked in the middle: the nearest edges are the long sides
+  assert.ok(Math.abs(Math.abs(dir(at(0, 0)).dot(long)) - 1) < 1e-9);
+  // near a short side: along that side, square to the long one
+  assert.ok(Math.abs(dir(at(1.4, 0)).dot(long)) < 1e-9);
+  // a face in another plane is not this face
+  assert.equal(faceEdgeDirection((i) => tris[i], 6, new Vector3(0, 1, 0), at(0, 0, 5)), null);
+});

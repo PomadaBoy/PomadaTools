@@ -112,17 +112,24 @@ export class Measure {
   }
 
   /**
-   * beams: [{ label, colour, anchor, d }], each drawn from the origin to its anchor.
+   * beams: [{ label, colour, from, to, d }]: one line each, end to end, with its total d.
    * info: { along: [{ name, plus, minus, span }, ...], thickness, clear }, for the list and tests.
    */
   addLaser(origin, beams, info) {
     const lines = [], marks = [this.dot(origin, '#1b222c')];
+    const ends = [];
     for (const b of beams) {
-      lines.push(this.line(b.colour, origin, b.anchor));
-      marks.push(this.dot(b.anchor, b.colour));
-      marks.push({ el: this.el('mlabel', `${b.label} ${metres(b.d)}`, b.colour), at: () => drawnAt(origin).lerp(drawnAt(b.anchor), 0.5) });
+      lines.push(this.line(b.colour, b.from, b.to));
+      for (const end of [b.from, b.to]) {
+        if (end === origin) continue;
+        marks.push(this.dot(end, b.colour));
+        ends.push(end);
+      }
+      // where the label goes: b.at = [from, to, t] (default: the middle of the line)
+      const [la, lb, t] = b.at ?? [b.from, b.to, 0.5];
+      marks.push({ el: this.el('mlabel', `${b.label} ${metres(b.d)}`, b.colour), at: () => drawnAt(la).lerp(drawnAt(lb), t) });
     }
-    return this.add({ kind: 'laser', anchors: [origin, ...beams.map((b) => b.anchor)], origin: this.revit(origin), info, lines, marks });
+    return this.add({ kind: 'laser', anchors: [origin, ...ends], origin: this.revit(origin), info, lines, marks });
   }
 
   remove(item) {
@@ -151,7 +158,7 @@ export class Measure {
     const { along, thickness, clear } = item.info;
     return {
       title: 'Laser',
-      detail: `${along.map((a) => `${a.name} ${m(a.span)}`).join(' · ')} · thickness ${m(thickness)} · clear ${m(clear)} m`,
+      detail: `${along.map((x) => `${x.name} ${m(x.span)}`).join(' · ')} · thickness ${m(thickness)} · clear ${m(clear)} m`,
     };
   }
 

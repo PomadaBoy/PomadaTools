@@ -14,7 +14,7 @@ import {
 import { colourScheme, valueKey, SLOTS, BINS } from './colour.js';
 import { Cuts } from './cuts.js';
 import { Measure } from './measure.js';
-import { REVIT_AXES, snapNormal, nearestWithin, metres, toRevit } from './geom.js';
+import { REVIT_AXES, snapNormal, nearestWithin, metres, toRevit, faceEdgeDirection } from './geom.js';
 
 const $ = (s) => document.querySelector(s);
 const viewport = $('#viewport');
@@ -1170,18 +1170,25 @@ function measureClick(ev) {
   renderMeasures();
 }
 
-/** The Revit axis a direction runs along (within about 10°), or null. */
-function axisName(dir) {
-  for (const [name, axis] of Object.entries(REVIT_AXES)) if (Math.abs(dir.dot(axis)) > 0.985) return name;
-  return null;
+const LASER = { a: '#e34948', b: '#2a78d6', clear: '#008300', thickness: '#eda100' };
+
+/** The triangle corners of a mesh in world space, for faceEdgeDirection (three reused vectors). */
+function meshCorners(mesh) {
+  const pos = mesh.geometry.attributes.position, idx = mesh.geometry.index;
+  const tmp = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  return {
+    count: idx ? idx.count : pos.count,
+    at: (i) => tmp[i % 3].fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(mesh.matrixWorld),
+  };
 }
-const LASER = { a: '#e34948', b: '#2a78d6', normal: '#008300', thickness: '#eda100' };
 
 /**
- * 3-axis laser from a clicked surface, in line with that surface:
- * - along it, both ways in two directions, to where it ends (Revit X and Y on a floor; along
- *   and up a wall). These rays run half way into the element, so they leave it at its edges
- *   and don't graze small steps on the face, and curved faces don't end them early.
+ * 3-axis laser from a clicked surface, square to that surface and to the element:
+ * - along it, both ways in two directions, to where it ends. On a floor, deck or footing:
+ *   along the face's nearest edge and square to it (so a skewed footing is measured along its
+ *   own sides, not the project grid); on a wall: along it and up it. These rays run half way
+ *   into the element, so they leave it at its edges and don't graze small steps on the face,
+ *   and curved faces don't end them early. Shown as one total each: length, width or height.
  * - through the element: its thickness there;
  * - straight out: the clear distance to the next surface in front.
  */
@@ -1190,14 +1197,16 @@ function laser(s) {
   const P = s.hit.clone();
   const n = s.normal.clone().normalize();          // the face normal, towards the viewer
   const up = REVIT_AXES.Z;
-  let a, b;
-  if (Math.abs(n.dot(up)) > 0.7) {                  // floors, decks, roofs: Revit X and Y in the face
-    a = REVIT_AXES.X.clone().addScaledVector(n, -n.dot(REVIT_AXES.X)).normalize();
-    b = new THREE.Vector3().crossVectors(n, a).normalize();
-  } else {                                          // walls: along the face and up it
-    a = new THREE.Vector3().crossVectors(up, n).normalize();
-    b = new THREE.Vector3().crossVectors(n, a).normalize();
+  const flat = Math.abs(n.dot(up)) > 0.7;          // floors, decks, footings, roofs
+  let a;
+  if (flat) {
+    const corners = meshCorners(s.mesh);
+    a = faceEdgeDirection(corners.at, corners.count, n, P)
+      ?? REVIT_AXES.X.clone().addScaledVector(n, -n.dot(REVIT_AXES.X)).normalize();
+  } else {
+    a = new THREE.Vector3().crossVectors(up, n).normalize();   // walls: along the face
   }
+  const b = new THREE.Vector3().crossVectors(n, a).normalize();  // square to a, in the face
   const cast = (from, dir) => {
     raycaster.set(from, dir);
     raycaster.far = modelRadius * 8;
@@ -1206,33 +1215,55 @@ function laser(s) {
     return h;
   };
   const anchorAt = (p, e) => ({ e, local: p.clone().sub(e.offset) });
+  const origin = anchorAt(P, s.e);
   const beams = [];
 
   // through the element: only the same element's other side counts as its thickness
   const back = cast(P, n.clone().negate());
   const thickness = back && back.e === s.e ? back.distance : null;
-  if (thickness != null) beams.push({ label: 'thickness', colour: LASER.thickness, anchor: anchorAt(back.point, back.e), d: thickness });
+  if (thickness != null) {
+    const to = anchorAt(back.point, back.e);
+    beams.push({ label: 'thickness', colour: LASER.thickness, from: origin, to, d: thickness, at: [origin, to, 1] });
+  }
   // straight out to the next surface
   const front = cast(P, n);
-  const nName = axisName(n) ?? '⊥';
-  if (front) beams.push({ label: nName, colour: LASER.normal, anchor: anchorAt(front.point, front.e), d: front.distance });
+  if (front) beams.push({ label: 'clear', colour: LASER.clear, from: origin, to: anchorAt(front.point, front.e), d: front.distance });
 
-  // along the face, half way into the element; drawn on the face
+  // along the face, half way into the element; drawn on the face, one line and one total each way
   const inset = thickness != null ? thickness / 2 : 0.001;
   const Q = P.clone().addScaledVector(n, -inset);
   const along = [];
-  for (const [dir, colour, fallback] of [[a, LASER.a, '↔'], [b, LASER.b, '↕']]) {
-    const name = axisName(dir) ?? fallback;
-    const half = {};
+  for (const [dir, colour] of [[a, LASER.a], [b, LASER.b]]) {
+    const end = {}, half = {};
     for (const sign of [1, -1]) {
       const h = cast(Q, dir.clone().multiplyScalar(sign));
       half[sign] = h ? h.distance : null;
-      if (h) beams.push({ label: name, colour, anchor: anchorAt(h.point.clone().addScaledVector(n, inset), s.e), d: h.distance });
+      end[sign] = h ? anchorAt(h.point.clone().addScaledVector(n, inset), s.e) : origin;
     }
-    along.push({ name, plus: half[1], minus: half[-1], span: half[1] != null || half[-1] != null ? (half[1] ?? 0) + (half[-1] ?? 0) : null });
+    const span = half[1] != null || half[-1] != null ? (half[1] ?? 0) + (half[-1] ?? 0) : null;
+    along.push({ dir, colour, plus: half[1], minus: half[-1], span, from: end[-1], to: end[1] });
+  }
+  // names: on a wall, length along it and height up it; on a floor, the longer one is the length
+  if (flat) {
+    along.sort((x, y) => (y.span ?? -1) - (x.span ?? -1));
+    along[0].name = 'length';
+    along[1].name = 'width';
+  } else {
+    along[0].name = 'length';
+    along[1].name = 'height';
+  }
+  for (const x of along) {
+    if (x.span == null) continue;
+    // the total sits in the middle of the longer half, so the two labels don't meet where the lines cross
+    const far = (x.plus ?? 0) >= (x.minus ?? 0) ? x.to : x.from;
+    beams.push({ label: x.name, colour: x.colour, from: x.from, to: x.to, d: x.span, at: [origin, far, 0.5] });
   }
   if (!beams.length) { mState.note = 'Nothing to measure from there.'; return; }
-  measure.addLaser(anchorAt(P, s.e), beams, { along, thickness, clear: front ? front.distance : null, normal: nName });
+  const info = {
+    along: along.map(({ name, plus, minus, span }) => ({ name, plus, minus, span })),
+    thickness, clear: front ? front.distance : null,
+  };
+  measure.addLaser(origin, beams, info);
 }
 
 function renderMeasures() {

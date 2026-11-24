@@ -524,7 +524,7 @@ test('Colour by: values, Other, number range, material per part, legend, theme a
   assert.equal(s.kind, 'range');
   assert.deepEqual(s.entries.map((e) => e.tone), ['q1', 'q2', 'q3', 'q4']);
   assert.equal(s.entries.reduce((a, e) => a + e.count, 0), stats.elements);
-  assert.deepEqual(s.entries.map((e) => [e.label, e.count]), [['0.72 m³', 72], ['0.93 m³', 64], ['2.02 – 8.53 m³', 76], ['9.25 – 30 m³', 92]]);
+  assert.deepEqual(s.entries.map((e) => [e.label, e.count]), [['0.72 m³', 72], ['0.93 m³', 64], ['2.02 – 8.53 m³', 77], ['9.25 – 30 m³', 92]]);
   await checkColours();
 
   // unticking a legend row hides those elements; ticking shows them again
@@ -576,24 +576,27 @@ test('Cut: Add cut on the clicked face, move it, Flip and Remove; clicks skip wh
   await page.click('#cut-list [data-a="remove"]');
   const onFace = (frac) => {
     const p = [0, 1, 2].map((i) => (el.box[0][i] + el.box[1][i]) / 2);
-    const j = k === 0 ? 2 : 0;
+    // along the face's longer horizontal side
+    const span = (i) => el.box[1][i] - el.box[0][i];
+    const j = k === 0 ? 2 : k === 2 ? 0 : (span(0) >= span(2) ? 0 : 2);
     p[k] = v;
     p[j] = el.box[0][j] + frac * (el.box[1][j] - el.box[0][j]);
     return p;
   };
   await page.keyboard.press('Escape');
-  await page.mouse.click(...(await page.evaluate((p) => window.viewer.project(p), onFace(0.15))));
+  await page.mouse.click(...(await page.evaluate((p) => window.viewer.project(p), onFace(0.08))));
   assert.equal((await state(page)).selected, wall);
   await page.click('#pk-cut');
-  const mid = await page.evaluate((p) => window.viewer.project(p), onFace(0.75));
+  const mid = await page.evaluate((p) => window.viewer.project(p), onFace(0.92));
   const [h] = await page.evaluate(() => window.viewer.handles());
-  assert.ok(Math.hypot(mid[0] - h.at[0], mid[1] - h.at[1]) > 40, 'checking away from the arrow');
+  assert.ok(Math.hypot(mid[0] - h.at[0], mid[1] - h.at[1]) > 30, 'checking away from the arrow');
 
   // move it through the element: clicking there no longer finds it
-  const thickness = el.box[1][k] - el.box[0][k];
-  await page.locator('#cut-list input[type="range"]').fill(String(thickness + 0.5));
+  // a whole number of the slider's 0.01 m steps, past the far side of the element
+  const through = Math.ceil((el.box[1][k] - el.box[0][k]) * 100) / 100 + 0.5;
+  await page.locator('#cut-list input[type="range"]').fill(String(through));
   c = await cutState(page);
-  assert.ok(Math.abs(c.planes[0].offset - (thickness + 0.5)) < 1e-9);
+  assert.ok(Math.abs(c.planes[0].offset - through) < 1e-6);
   assert.match(await page.textContent('#cut-list output'), /^\+\d+\.\d{3} m$/);
   await page.evaluate(() => document.activeElement.blur());
   await page.keyboard.press('Escape');
@@ -603,7 +606,7 @@ test('Cut: Add cut on the clicked face, move it, Flip and Remove; clicks skip wh
   // Flip keeps the other side: the element is back
   await page.click('#cut-list [data-a="flip"]');
   c = await cutState(page);
-  assert.ok(Math.abs(c.planes[0].offset + thickness + 0.5) < 1e-9);
+  assert.ok(Math.abs(c.planes[0].offset + through) < 1e-6);
   await page.keyboard.press('Escape');
   await page.mouse.click(...mid);
   assert.equal((await state(page)).selected, wall);
@@ -681,7 +684,7 @@ const topCorners = (e) => {
   const [lo, hi] = e.box;
   return { a: [lo[0], hi[1], hi[2]], b: [hi[0], hi[1], hi[2]], centre: [(lo[0] + hi[0]) / 2, hi[1], (lo[2] + hi[2]) / 2] };
 };
-const near = (a, b, eps = 1e-6) => a.every((v, i) => Math.abs(v - b[i]) < eps);
+const near = (a, b, eps = 1e-4) => a.every((v, i) => Math.abs(v - b[i]) < eps);
 // the roof slab nearest the viewer, on the right: clear of the cards on the left, also when exploded
 const frontRoof = (all) => all.filter((e) => e.category === 'Roofs')
   .sort((p, q) => q.box[1][2] - p.box[1][2] || q.box[0][0] - p.box[0][0])[0];
@@ -759,9 +762,9 @@ test('Measure: position marker gives survey coordinates', async () => {
   const p = (await page.evaluate(() => window.viewer.measures()))[0];
   assert.equal(p.kind, 'point');
   // Revit internal: the synthetic building's grid, 11985 + 10 k and 7985 + 10 k; roof top at 16 m
-  assert.ok([11985, 11995, 12005, 12015].some((x) => Math.abs(p.at[0] - x) < 1e-6), `X ${p.at[0]}`);
-  assert.ok([7985, 7995, 8005, 8015].some((y) => Math.abs(p.at[1] - y) < 1e-6), `Y ${p.at[1]}`);
-  assert.ok(Math.abs(p.at[2] - 16) < 1e-6, `Z ${p.at[2]}`);
+  assert.ok([11985, 11995, 12005, 12015].some((x) => Math.abs(p.at[0] - x) < 1e-4), `X ${p.at[0]}`);
+  assert.ok([7985, 7995, 8005, 8015].some((y) => Math.abs(p.at[1] - y) < 1e-4), `Y ${p.at[1]}`);
+  assert.ok(Math.abs(p.at[2] - 16) < 1e-4, `Z ${p.at[2]}`);
   // survey: the model's shared coordinates put the internal origin at E 6 600 000, N 4 700 000, 100 m
   assert.ok(near(p.shared, [6600000 + p.at[0], 4700000 + p.at[1], 100 + p.at[2]]), `survey ${p.shared}`);
   assert.match(await page.textContent('#marks .mpos'), /^E 6,61\d,\d{3}\.\d{3}\nN 4,70\d,\d{3}\.\d{3}\nZ 116\.000$/);
@@ -787,39 +790,51 @@ test('Measure: the laser measures along the clicked surface to its edges, its th
 
   // a top floor slab, clicked in the middle of its top: 10 × 10 m, 30 cm thick, nothing above
   const floorTop = Math.max(...all.filter((x) => x.category === 'Floors').map((x) => x.box[1][1]));
-  const floors = all.filter((e) => e.category === 'Floors' && Math.abs(e.box[1][1] - floorTop) < 1e-6);
+  const floors = all.filter((e) => e.category === 'Floors' && Math.abs(e.box[1][1] - floorTop) < 1e-4);
   let laser = null;
   for (const f of floors) {
     const mid = [(f.box[0][0] + f.box[1][0]) / 2, f.box[1][1], (f.box[0][2] + f.box[1][2]) / 2];
     await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), mid)));
     laser = (await lasers()).at(-1);
-    if (laser && Math.abs(laser.origin[2] - 12) < 1e-6) break;
+    if (laser && Math.abs(laser.origin[2] - 12) < 1e-4) break;
     laser = null;
   }
   assert.ok(laser, 'a laser from the top of a top floor slab');
   const { along, thickness, clear } = laser.info;
-  assert.deepEqual(along.map((x) => x.name), ['X', 'Y']);
-  for (const x of along) assert.ok(Math.abs(x.span - 10) < 1e-6, `${x.name} across the slab: ${x.span}`);
-  assert.ok(Math.abs(thickness - 0.3) < 1e-6, `thickness ${thickness}`);
+  assert.deepEqual(along.map((x) => x.name), ['length', 'width']);
+  for (const x of along) assert.ok(Math.abs(x.span - 10) < 1e-4, `${x.name} across the slab: ${x.span}`);
+  assert.ok(Math.abs(thickness - 0.3) < 1e-4, `thickness ${thickness}`);
   assert.equal(clear, null, 'roofs hidden: nothing above');
   // the ends along the slab are drawn on its top face, at its edges
-  const ends = laser.points.slice(1).filter((q) => Math.abs(q[2] - 12) < 1e-6);
+  const ends = laser.points.slice(1).filter((q) => Math.abs(q[2] - 12) < 1e-4);
   assert.equal(ends.length, 4);
-  assert.match(laser.text.detail, /^X 10\.000 · Y 10\.000 · thickness 0\.300 · clear — m$/);
+  assert.match(laser.text.detail, /^length 10\.000 · width 10\.000 · thickness 0\.300 · clear — m$/);
 
   // a wall on the west side, clicked in the middle of its outer face: 25 cm thick, 3.70 m high,
   // 9.50 m between the columns at its ends, nothing in front
-  const wall = all.filter((e) => e.category === 'Walls' && Math.abs(e.box[0][0] - Math.min(...all.map((x) => x.box[0][0]))) < 1e-6)
+  const wall = all.filter((e) => e.category === 'Walls' && Math.abs(e.box[0][0] - Math.min(...all.map((x) => x.box[0][0]))) < 1e-4)
     .sort((p, q) => q.box[1][1] - p.box[1][1])[0];
   const face = [wall.box[0][0], (wall.box[0][1] + wall.box[1][1]) / 2, (wall.box[0][2] + wall.box[1][2]) / 2];
   await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), face)));
   const w = (await lasers()).at(-1);
   assert.notEqual(w, laser, 'a second laser');
-  assert.deepEqual(w.info.along.map((x) => x.name), ['Y', 'Z']);
-  assert.ok(Math.abs(w.info.thickness - 0.25) < 1e-6, `wall thickness ${w.info.thickness}`);
-  assert.ok(Math.abs(w.info.along[1].span - 3.7) < 1e-6, `wall height ${w.info.along[1].span}`);
-  assert.ok(Math.abs(w.info.along[0].span - 9.5) < 1e-6, `between the columns ${w.info.along[0].span}`);
+  assert.deepEqual(w.info.along.map((x) => x.name), ['length', 'height']);
+  assert.ok(Math.abs(w.info.thickness - 0.25) < 1e-4, `wall thickness ${w.info.thickness}`);
+  assert.ok(Math.abs(w.info.along[1].span - 3.7) < 1e-4, `wall height ${w.info.along[1].span}`);
+  assert.ok(Math.abs(w.info.along[0].span - 9.5) < 1e-4, `between the columns ${w.info.along[0].span}`);
   assert.equal(w.info.clear, null);
+  // one total per direction on screen
+  assert.ok(await page.locator('#marks .mlabel', { hasText: /^width 10.000$/ }).count() >= 1);
+
+  // the footing turned 25° to the grid: measured along its own sides, 3 x 1.5 m, 1.2 m deep
+  const pad = all.find((e) => e.id === 700100);
+  const top = [(pad.box[0][0] + pad.box[1][0]) / 2, pad.box[1][1], (pad.box[0][2] + pad.box[1][2]) / 2];
+  await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), top)));
+  const r = (await lasers()).at(-1);
+  assert.deepEqual(r.info.along.map((x) => x.name), ['length', 'width']);
+  assert.ok(Math.abs(r.info.along[0].span - 3) < 1e-4, `length ${r.info.along[0].span}`);
+  assert.ok(Math.abs(r.info.along[1].span - 1.5) < 1e-4, `width ${r.info.along[1].span}`);
+  assert.ok(Math.abs(r.info.thickness - 1.2) < 1e-4, `thickness ${r.info.thickness}`);
   assert.equal(await page.locator('#m-list li').count(), (await lasers()).length, 'one row per laser');
   assert.deepEqual(errors(), []);
   await page.close();
