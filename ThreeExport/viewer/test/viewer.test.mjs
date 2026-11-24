@@ -301,20 +301,287 @@ test('Download .glb saves the model', async () => {
   await page.close();
 });
 
+const state = (page) => page.evaluate(() => window.viewer.state());
+const shownCount = async (page) => (await els(page)).filter((e) => e.shown).length;
+const byId = (id) => data.find((d) => d.id === id);
+
+/** Clicks the middle of the model and returns the selected element's metadata. */
+async function clickModel(page) {
+  const box = await page.locator('#viewport canvas').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.42, box.y + box.height / 2);
+  await page.waitForSelector('#panel:not([hidden])');
+  return byId((await state(page)).selected);
+}
+
+/** Selects an element through the search box and the results list. */
+async function selectById(page, id) {
+  if (!(await page.isVisible('#filter'))) await page.click('#tb-filter');
+  await page.fill('#f-search', String(id));
+  await page.locator('#f-search').press('Enter');
+  await page.locator(`#f-list button[data-i]`).first().click();
+  assert.equal((await state(page)).selected, id);
+  await page.click('#f-clear');
+}
+
+test('Hide and Isolate from the bar at the clicked element, with Undo and Show all', async () => {
+  const { page, errors } = await open();
+  const d = await clickModel(page);
+  assert.ok(await page.isVisible('#pick'), 'the bar shows at the clicked element');
+  assert.ok(await page.isVisible('#pick-dot'));
+  const all = stats.elements;
+
+  await page.click('#pk-hide');
+  let s = await state(page);
+  assert.equal(s.hidden, 1);
+  assert.equal(s.selected, null, 'a hidden element is no longer selected');
+  assert.ok(await page.isHidden('#pick'));
+  assert.equal(await shownCount(page), all - 1);
+  assert.equal((await els(page)).find((e) => e.id === d.id).shown, false);
+  assert.equal(await page.textContent('#vis-text'), 'Hidden: 1 element');
+  await page.click('#vis-undo');
+  assert.equal((await state(page)).hidden, 0);
+  assert.equal(await shownCount(page), all);
+  assert.ok(await page.isHidden('#vis'));
+
+  // Isolate ▼ Same category: only that category; the selection stays
+  await clickModel(page);
+  await page.click('#pick .pk-more[data-act="isolate"]');
+  assert.ok(await page.isVisible('#pk-menu'));
+  const n = stats.perCategory[d.category];
+  assert.equal(await page.textContent('#pk-menu [data-scope="category"] .n'), String(n));
+  assert.equal(await page.textContent('#pk-menu [data-scope="element"] .n'), '1');
+  const sameType = data.filter((x) => x.category === d.category && x.family === d.family && x.type === d.type).length;
+  assert.equal(await page.textContent('#pk-menu [data-scope="type"] .n'), String(sameType));
+  await page.click('#pk-menu [data-scope="category"]');
+  assert.ok(await page.isHidden('#pk-menu'));
+  s = await state(page);
+  assert.equal(s.isolated, n);
+  assert.equal(s.selected, d.id);
+  const shown = (await els(page)).filter((e) => e.shown);
+  assert.equal(shown.length, n);
+  assert.ok(shown.every((e) => e.category === d.category));
+  assert.equal(await page.textContent('#vis-text'), `Isolated: ${n} elements`);
+
+  // Hide ▼ Same type, inside the isolated category
+  await page.click('#pick .pk-more[data-act="hide"]');
+  await page.click('#pk-menu [data-scope="type"]');
+  assert.equal(await shownCount(page), n - sameType);
+  assert.match(await page.textContent('#vis-text'), new RegExp(`^Isolated: ${n} elements · Hidden: ${sameType} elements$`));
+  await page.click('#vis-all');
+  assert.equal(await shownCount(page), all);
+  assert.deepEqual([(await state(page)).hidden, (await state(page)).isolated], [0, null]);
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('Revit shortcuts: HH, HI, HC, IC, HR and Ctrl+Z; typing in a box does not trigger them', async () => {
+  const { page } = await open();
+  const all = stats.elements;
+  const d = await clickModel(page);
+  const n = stats.perCategory[d.category];
+  const keys = async (...k) => { for (const x of k) await page.keyboard.press(x); };
+
+  await keys('h', 'i');
+  assert.equal(await shownCount(page), 1);
+  await keys('h', 'r');
+  assert.equal(await shownCount(page), all);
+  await keys('i', 'c');
+  assert.equal(await shownCount(page), n);
+  await keys('Control+z');
+  assert.equal(await shownCount(page), all, 'Ctrl+Z undoes IC');
+  await keys('h', 'c');
+  assert.equal(await shownCount(page), all - n);
+  assert.equal((await state(page)).selected, null);
+  await keys('h', 'r');
+  assert.equal(await shownCount(page), all);
+
+  await selectById(page, 843064);
+  await page.locator('#f-search').focus();
+  await keys('h', 'h');
+  assert.equal(await shownCount(page), all, 'keys typed in the search box are text');
+  await page.locator('#f-search').fill('');
+  await page.evaluate(() => document.activeElement.blur());
+  await keys('h', 'h');
+  assert.equal((await els(page)).find((e) => e.id === 843064).shown, false);
+
+  // the results list shows hand-hidden elements dimmed; picking one shows it again
+  await page.fill('#f-search', '843064');
+  await page.locator('#f-search').press('Enter');
+  const item = page.locator('#f-list button[data-i]').first();
+  assert.equal(await item.getAttribute('class'), 'off');
+  await item.click();
+  assert.equal((await els(page)).find((e) => e.id === 843064).shown, true);
+  assert.equal((await state(page)).selected, 843064);
+  await page.close();
+});
+
+test('property rows: Filter on value, Colour by and Copy value', async () => {
+  const { page } = await open({
+    init: () => {
+      window.__copied = [];
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__copied.push(t); } } });
+    },
+  });
+  await selectById(page, 843064);
+  await page.click('#tb-filter');   // closed: Filter on value must open it again
+  assert.ok(await page.isHidden('#filter'));
+
+  const rowAction = async (field, action) => {
+    const r = page.locator(`#panel [data-f="${field}"]`).first();
+    await r.hover();
+    await r.locator(`[data-a="${action}"]`).click();
+  };
+  await rowAction('Level', 'filter');
+  assert.ok(await page.isVisible('#filter'));
+  assert.equal(await page.inputValue('#f-rules .rule .r-name'), 'Level');
+  assert.equal(await page.inputValue('#f-rules .rule .r-op'), 'eq');
+  assert.equal(await page.inputValue('#f-rules .rule .r-val'), 'Nula');
+  assert.deepEqual(await matchIds(page), expectIds(ruleState(['Level', 'eq', 'Nula'])));
+
+  await rowAction('Type', 'filter');
+  assert.equal(await page.locator('#f-rules .rule').count(), 2);
+  assert.deepEqual(await matchIds(page), expectIds(ruleState(['Level', 'eq', 'Nula'], ['Type', 'eq', 'Obloga od Kulira'])));
+  // a second value of the same parameter replaces the first, instead of matching nothing
+  await rowAction('Level', 'filter');
+  assert.equal(await page.locator('#f-rules .rule').count(), 2);
+
+  // an instance parameter, as Revit writes it
+  await page.click('#f-clear');
+  await page.locator('#panel details summary', { hasText: 'Instance parameters' }).click();
+  await rowAction('Volume', 'filter');
+  assert.equal(await page.inputValue('#f-rules .rule .r-val'), '8.53 m³');
+  assert.deepEqual(await matchIds(page), expectIds(ruleState(['Volume', 'eq', '8.53 m³'])));
+  // the material list
+  await page.click('#f-clear');
+  await rowAction('Material', 'filter');
+  assert.deepEqual(await matchIds(page), [843064]);
+
+  await rowAction('Level', 'copy');
+  assert.equal((await page.evaluate(() => window.__copied)).at(-1), 'Nula');
+
+  await rowAction('Type', 'colour');
+  assert.ok(await page.isVisible('#colour'));
+  const c = (await state(page)).colour;
+  assert.equal(c.field, 'Type');
+  assert.equal(c.kind, 'values');
+  assert.equal(c.entries.reduce((a, e) => a + e.count, 0), stats.elements);
+  assert.equal(await page.inputValue('#c-field'), 'Type');
+  await page.close();
+});
+
+test('Colour by: values, Other, number range, material per part, legend, theme and Off', async () => {
+  const { page, errors } = await open();
+  const original = await els(page);
+  await page.click('#tb-colour');
+  assert.ok(await page.isVisible('#colour'));
+  assert.equal(await page.isDisabled('#c-kind [data-kind="range"]'), true);
+
+  // every drawn colour is its legend colour
+  const checkColours = async () => {
+    const s = await state(page);
+    for (const e of await els(page)) {
+      for (const [k, col] of e.colours.entries()) {
+        const tone = e.tones.length === 1 ? e.tones[0] : null;
+        if (tone) assert.equal(col, s.colour.tones[tone], `${e.id} part ${k}`);
+        else assert.ok(Object.values(s.colour.tones).includes(col), `${e.id} part ${k}: ${col}`);
+      }
+    }
+  };
+
+  await page.click('#c-quick [data-field="Category"]');
+  let s = (await state(page)).colour;
+  assert.deepEqual(s.entries.map((e) => [e.label, e.count]), Object.entries(stats.perCategory));
+  assert.deepEqual(s.entries.map((e) => e.tone), ['s1', 's2', 's3', 's4', 's5', 's6']);
+  assert.equal(await page.locator('#c-legend > li').count(), 6);
+  assert.equal(await page.getAttribute('#c-quick [data-field="Category"]', 'aria-pressed'), 'true');
+  assert.ok(await page.isVisible('#tb-colour-dot'));
+  await checkColours();
+
+  // ten types: eight colours and Other
+  await page.click('#c-quick [data-field="Type"]');
+  s = (await state(page)).colour;
+  assert.equal(s.entries.length, 9);
+  assert.equal(s.entries.at(-1).label, 'Other');
+  assert.match(await page.textContent('#c-note'), /^10 values: the 8 most common have colours/);
+  assert.equal(await page.textContent('#c-legend details summary'), '2 values');
+  await checkColours();
+
+  // materials colour each part: the floors' ceramic top differs from the concrete body
+  await page.click('#c-quick [data-field="Material"]');
+  const floor = (await els(page)).find((e) => e.category === 'Floors');
+  assert.equal(floor.tones.length, 2);
+  assert.notEqual(floor.colours[0], floor.colours[1]);
+  await checkColours();
+
+  // a typed parameter name; numbers can be shown as a range
+  await page.fill('#c-field', 'volume');
+  s = (await state(page)).colour;
+  assert.equal(s.field, 'Volume');
+  assert.equal(s.kind, 'values');
+  assert.equal(s.canRange, true);
+  await page.click('#c-kind [data-kind="range"]');
+  s = (await state(page)).colour;
+  assert.equal(s.kind, 'range');
+  assert.deepEqual(s.entries.map((e) => e.tone), ['q1', 'q2', 'q3', 'q4']);
+  assert.equal(s.entries.reduce((a, e) => a + e.count, 0), stats.elements);
+  assert.deepEqual(s.entries.map((e) => [e.label, e.count]), [['0.72 m³', 72], ['0.93 m³', 64], ['2.02 – 8.53 m³', 76], ['9.25 – 30 m³', 92]]);
+  await checkColours();
+
+  // unticking a legend row hides those elements; ticking shows them again
+  await page.locator('#c-legend input[data-entry="0"]').uncheck();
+  assert.equal((await state(page)).hidden, s.entries[0].count);
+  assert.equal(await shownCount(page), stats.elements - s.entries[0].count);
+  assert.ok(await page.isVisible('#vis'));
+  await page.locator('#c-legend input[data-entry="0"]').check();
+  assert.equal(await shownCount(page), stats.elements);
+
+  // the colours follow the page theme
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  await page.waitForFunction(() => window.viewer.state().colour.tones.q1 === '#184f95');
+  await checkColours();
+
+  await page.click('#c-off');
+  assert.equal((await state(page)).colour, null);
+  assert.ok(await page.isHidden('#tb-colour-dot'));
+  assert.deepEqual((await els(page)).map((e) => e.colours), original.map((e) => e.colours));
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
 const overlap = (a, b) => a && b && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
 test('panels do not overlap the inspect panel (desktop and phone)', async () => {
   for (const viewport of [{ width: 1280, height: 800 }, { width: 800, height: 700 }, { width: 375, height: 812 }]) {
     const { page } = await open({ viewport });
     await page.click('#tb-explode');
+    await page.click('#tb-colour');
+    await page.click('#c-quick [data-field="Type"]');
     await page.click('#tb-filter');
     await page.locator('#f-list button').first().click();
     await page.waitForSelector('#panel:not([hidden])');
     const side = await page.locator('#side').boundingBox();
     const filterBox = await page.locator('#filter').boundingBox();
+    const colourBox = await page.locator('#colour').boundingBox();
     const panelBox = await page.locator('#panel').boundingBox();
     assert.ok(!overlap(filterBox, panelBox), `${viewport.width}px: filter overlaps the inspect panel`);
+    assert.ok(!overlap(colourBox, panelBox), `${viewport.width}px: colour overlaps the inspect panel`);
     assert.ok(!overlap(side, panelBox), `${viewport.width}px: tools overlap the inspect panel`);
+    if (viewport.width > 640) {
+      const bar = await page.locator('#pick').boundingBox();
+      assert.ok(bar, `${viewport.width}px: the Hide / Isolate bar shows`);
+      assert.ok(!overlap(bar, panelBox), `${viewport.width}px: the Hide / Isolate bar overlaps the inspect panel`);
+      assert.ok(bar.x >= 0 && bar.y >= 0 && bar.x + bar.width <= viewport.width && bar.y + bar.height <= viewport.height);
+    } else {
+      assert.deepEqual(await page.$$eval('#side section', (s) => s.filter((x) => !x.hidden).map((x) => x.id)), ['filter'],
+        'phones: one tool panel at a time');
+      assert.ok(await page.isHidden('#pick'), 'phones: no floating bar');
+      assert.ok(await page.isVisible('#panel .pactions'), 'phones: Hide / Isolate in the sheet');
+      await page.click('#panel .pk-more[data-act="isolate"]');
+      const menu = await page.locator('#pk-menu').boundingBox();
+      assert.ok(menu.x >= 0 && menu.x + menu.width <= viewport.width && menu.y + menu.height <= viewport.height, 'menu on screen');
+      await page.click('#pk-menu [data-scope="element"]');
+      assert.equal((await state(page)).isolated, 1);
+    }
     const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
     assert.ok(sw <= cw, `${viewport.width}px: scrollWidth ${sw} > clientWidth ${cw}`);
     await page.close();

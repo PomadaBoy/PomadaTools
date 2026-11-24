@@ -15,6 +15,14 @@
     --font-body: "Inter", "Segoe UI", system-ui, sans-serif;
     --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
     --gap: 14px;
+    --card-solid: #ffffff;
+    /* Colour by parameter (checked with the dataviz palette validator against --bg-bottom):
+       eight categorical slots in a fixed order, a four-step ramp for ranges (low light,
+       high dark), and greys for values past the eighth and for no value. */
+    --cb-s1: #2a78d6; --cb-s2: #eb6834; --cb-s3: #1baf7a; --cb-s4: #eda100;
+    --cb-s5: #e87ba4; --cb-s6: #008300; --cb-s7: #6250d6; --cb-s8: #e34948;
+    --cb-q1: #5598e7; --cb-q2: #2a78d6; --cb-q3: #1c5cab; --cb-q4: #104281;
+    --cb-other: #898781; --cb-none: #c3c2b7;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -24,6 +32,11 @@
       --accent: #6aa1ff; --accent-soft: #1c2b44;
       --grid-major: #3a4350; --grid-minor: #262d37;
       --shadow: 0 6px 24px rgba(0, 0, 0, .40);
+      --card-solid: #181d25;
+      --cb-s1: #3987e5; --cb-s2: #d95926; --cb-s3: #199e70; --cb-s4: #c98500;
+      --cb-s5: #d55181; --cb-s6: #0ca30c; --cb-s7: #9085e9; --cb-s8: #e66767;
+      --cb-q1: #184f95; --cb-q2: #2a78d6; --cb-q3: #5598e7; --cb-q4: #86b6ef;
+      --cb-other: #898781; --cb-none: #52514e;
       color-scheme: dark;
     }
   }
@@ -34,6 +47,11 @@
     --accent: #6aa1ff; --accent-soft: #1c2b44;
     --grid-major: #3a4350; --grid-minor: #262d37;
     --shadow: 0 6px 24px rgba(0, 0, 0, .40);
+    --card-solid: #181d25;
+    --cb-s1: #3987e5; --cb-s2: #d95926; --cb-s3: #199e70; --cb-s4: #c98500;
+    --cb-s5: #d55181; --cb-s6: #0ca30c; --cb-s7: #9085e9; --cb-s8: #e66767;
+    --cb-q1: #184f95; --cb-q2: #2a78d6; --cb-q3: #5598e7; --cb-q4: #86b6ef;
+    --cb-other: #898781; --cb-none: #52514e;
     color-scheme: dark;
   }
   html, body { height: 100%; overflow: hidden; }
@@ -216,6 +234,93 @@
   #f-list .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   #f-list code { margin-left: auto; font: 11.5px var(--font-mono); color: var(--muted); padding-left: 6px; }
   #f-list .more { color: var(--muted); padding: 6px 7px; font-size: 12px; }
+  #f-list button.off { opacity: .5; }
+  #f-list button.off .nm::after { content: " · hidden"; color: var(--muted); }
+
+  /* Colour by parameter */
+  #colour { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; overflow: hidden; }
+  .cdot { width: 12px; height: 12px; border-radius: 50%; background: conic-gradient(var(--cb-s1) 0 25%, var(--cb-s2) 0 50%, var(--cb-s3) 0 75%, var(--cb-s4) 0); }
+  .quick { display: flex; flex-wrap: wrap; gap: 4px; }
+  .quick button { border: 1px solid var(--line); background: var(--card); border-radius: 99px; padding: 2px 9px; font-size: 12px; }
+  .quick button:hover { border-color: var(--accent); color: var(--accent); }
+  .quick button[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent); font-weight: 600; }
+  .seg button:disabled { opacity: .4; cursor: default; }
+  .note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  #c-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+  #c-legend label { display: flex; align-items: center; gap: 8px; padding: 4px 5px; border-radius: 6px; cursor: pointer; }
+  #c-legend label:hover { background: var(--well); }
+  #c-legend input { accent-color: var(--accent); margin: 0; flex: none; }
+  #c-legend .sw { width: 16px; height: 16px; }
+  #c-legend .v { overflow-wrap: anywhere; }
+  #c-legend .c { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; padding-left: 8px; }
+  #c-legend details { margin: 0 0 4px 50px; border: 0; padding: 0; }
+  #c-legend summary { font-weight: 400; font-size: 12px; color: var(--accent); }
+  #c-legend details ul { list-style: none; margin: 4px 0 0; padding: 0; max-height: 160px; overflow-y: auto; }
+  #c-legend details li { display: flex; gap: 8px; padding: 2px 5px 2px 0; color: var(--muted); font-size: 12px; }
+
+  /* Hide / isolate bar in the tools column */
+  #vis { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; font-size: 12.5px; flex-wrap: wrap; align-self: flex-start; max-width: 100%; }
+  #vis-text { margin-right: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+  button.ghost:disabled { opacity: .45; cursor: default; border-color: var(--line); color: var(--ink); }
+
+  /* Actions on a property row: copy, colour by, filter on value */
+  #panel td, .mats li { position: relative; }
+  .acts {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: flex; gap: 1px;
+    padding-left: 18px; background: linear-gradient(to right, transparent, var(--card-solid) 16px);
+    opacity: 0; pointer-events: none;
+  }
+  #panel tr:hover .acts, #panel tr:focus-within .acts, #panel tr.open .acts,
+  .mats li:hover .acts, .mats li:focus-within .acts, .mats li.open .acts { opacity: 1; pointer-events: auto; }
+  .acts button {
+    border: 0; background: var(--card-solid); width: 26px; height: 26px; border-radius: 6px; padding: 0;
+    display: grid; place-items: center; color: var(--muted);
+  }
+  .acts button:hover { background: var(--well); color: var(--accent); }
+  .acts svg, .pk-main svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* The selected element: a dot where it was clicked and a Hide / Isolate bar above it */
+  #pick-dot {
+    position: fixed; left: 0; top: 0; z-index: 2; width: 14px; height: 14px; margin: -7px 0 0 -7px;
+    border-radius: 50%; background: var(--accent); border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .3);
+    pointer-events: none;
+  }
+  #pick { position: fixed; left: 0; top: 0; z-index: 3; display: flex; gap: 2px; padding: 6px; }
+  .pk-act { display: grid; justify-items: stretch; }
+  .pk-main {
+    border: 0; background: none; border-radius: 7px; padding: 6px 12px 3px; min-width: 66px;
+    display: grid; justify-items: center; gap: 3px; font-size: 12px;
+  }
+  .pk-main svg { width: 20px; height: 20px; color: var(--muted); }
+  .pk-main:hover { background: var(--well); }
+  .pk-main:hover svg { color: var(--accent); }
+  .pk-more { border: 0; background: none; color: var(--muted); font-size: 10px; line-height: 1; padding: 3px 0 4px; border-radius: 5px; }
+  .pk-more:hover, .pk-more[aria-expanded="true"] { background: var(--well); color: var(--ink); }
+  .pk-x {
+    position: absolute; top: -11px; right: -11px; width: 24px; height: 24px; border-radius: 50%; padding: 0;
+    background: var(--card-solid); border: 1px solid var(--line); font-size: 16px; display: grid; place-items: center;
+    box-shadow: var(--shadow);
+  }
+  #pk-menu {
+    position: fixed; left: 0; top: 0; z-index: 4; min-width: 150px; display: grid; padding: 4px;
+    background: var(--card-solid); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow);
+  }
+  /* Phones: no room for a floating bar above the bottom sheet; Hide / Isolate sit in the sheet */
+  .pactions { display: none; gap: 8px; margin: 0 0 10px; }
+  .pactions .split { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: 1; }
+  .pactions .pk-main { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; min-width: 0; flex: 1; justify-content: center; border-radius: 0; }
+  .pactions .pk-main svg { width: 18px; height: 18px; }
+  .pactions .pk-more { padding: 0 12px; border-left: 1px solid var(--line); border-radius: 0; }
+  @media (max-width: 640px) {
+    .pactions { display: flex; }
+    #pick { display: none !important; }
+  }
+  #pk-menu button {
+    border: 0; background: none; text-align: left; padding: 6px 10px; border-radius: 6px; font-size: 12.5px;
+    display: flex; gap: 14px; white-space: nowrap;
+  }
+  #pk-menu button:hover, #pk-menu button:focus-visible { background: var(--well); }
+  #pk-menu .n { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
   @media (prefers-reduced-motion: reduce) { #status .bar i { transition: none; } }
   [hidden] { display: none !important; }
 </style>
@@ -237,7 +342,13 @@
   <div id="tools" class="card">
     <button id="tb-explode" class="tool" type="button" aria-expanded="false" aria-controls="explode">Explode</button>
     <button id="tb-filter" class="tool" type="button" aria-expanded="false" aria-controls="filter">Filter<span id="tb-filter-n" class="badge" hidden></span></button>
+    <button id="tb-colour" class="tool" type="button" aria-expanded="false" aria-controls="colour">Colour<span id="tb-colour-dot" class="cdot" hidden></span></button>
     <button id="tb-download" class="tool" type="button" title="Save the 3D model as a .glb file">Download .glb</button>
+  </div>
+  <div id="vis" class="card" role="status" hidden>
+    <span id="vis-text"></span>
+    <button id="vis-undo" class="ghost" type="button" title="Undo the last hide or isolate (Ctrl+Z)">Undo</button>
+    <button id="vis-all" class="ghost" type="button" title="Show all hidden elements (HR)">Show all</button>
   </div>
   <section id="explode" class="card" aria-label="Explode" hidden>
     <div id="explode-mode" class="seg" role="group" aria-label="Explode mode">
@@ -280,7 +391,46 @@
       <ul id="f-list"></ul>
     </div>
   </section>
+  <section id="colour" class="card" aria-label="Colour by parameter" hidden>
+    <header class="f-head">
+      <h2>Colour by</h2>
+      <span style="margin-right: auto"></span>
+      <button id="c-off" class="ghost" type="button" title="Back to the model's own colours">Off</button>
+      <button id="c-close" class="icon" type="button" title="Close" aria-label="Close colour by">×</button>
+    </header>
+    <div class="f-body">
+      <input id="c-field" class="field" list="f-names" placeholder="Parameter, e.g. Type or Volume" aria-label="Colour by parameter" autocomplete="off">
+      <div id="c-quick" class="quick" role="group" aria-label="Common parameters">
+        <button type="button" data-field="Category" aria-pressed="false">Category</button>
+        <button type="button" data-field="Family" aria-pressed="false">Family</button>
+        <button type="button" data-field="Type" aria-pressed="false">Type</button>
+        <button type="button" data-field="Level" aria-pressed="false">Level</button>
+        <button type="button" data-field="Material" aria-pressed="false">Material</button>
+      </div>
+      <div id="c-kind" class="seg" role="group" aria-label="Colours for">
+        <button type="button" data-kind="values" aria-pressed="true">Each value</button>
+        <button type="button" data-kind="range" aria-pressed="false">Number range</button>
+      </div>
+      <p id="c-note" class="note"></p>
+      <ul id="c-legend" aria-label="Legend"></ul>
+    </div>
+  </section>
 </div>
+<div id="pick-dot" hidden></div>
+<div id="pick" class="card" role="toolbar" aria-label="Selected element" hidden>
+  <div class="pk-act">
+    <button id="pk-hide" class="pk-main" type="button" data-act="hide" title="Hide this element (HH)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/></svg>Hide</button>
+    <button class="pk-more" type="button" data-act="hide" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to hide">▼</button>
+  </div>
+  <div class="pk-act">
+    <button id="pk-isolate" class="pk-main" type="button" data-act="isolate" title="Isolate this element: hide everything else (HI)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="7" height="7" rx="1"/><path d="M3 7V4.5A1.5 1.5 0 0 1 4.5 3H7M17 3h2.5A1.5 1.5 0 0 1 21 4.5V7M21 17v2.5a1.5 1.5 0 0 1-1.5 1.5H17M7 21H4.5A1.5 1.5 0 0 1 3 19.5V17" stroke-dasharray="2 2.2"/></svg>Isolate</button>
+    <button class="pk-more" type="button" data-act="isolate" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to isolate">▼</button>
+  </div>
+  <button id="pk-close" class="pk-x" type="button" title="Clear the selection (Esc)" aria-label="Clear the selection">×</button>
+</div>
+<div id="pk-menu" role="menu" hidden></div>
 <div id="status" class="card" role="status">
   <span id="status-text">Loading model…</span>
   <div class="bar"><i id="status-bar"></i></div>

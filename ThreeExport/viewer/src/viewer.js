@@ -9,8 +9,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { explodeOffsets } from './explode.js';
 import {
   OPERATORS, FACETS, FIELDS, NONE, emptyFilter, filterActive, matches, searchText, facetValues,
-  operatorNeedsValue,
+  operatorNeedsValue, fieldValue,
 } from './filter.js';
+import { colourScheme, valueKey, SLOTS, BINS } from './colour.js';
 
 const $ = (s) => document.querySelector(s);
 const viewport = $('#viewport');
@@ -194,6 +195,7 @@ function applyTheme() {
   grid.material.transparent = true;
   grid.material.opacity = 0.85;
   scene.add(grid);
+  if (colour.scheme) refreshColourTheme();
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -250,9 +252,29 @@ function highlightOf(base) {
 function paint(e) {
   const sel = selected === e.obj;
   for (const m of e.meshes) {
-    const base = baseMaterial.get(m);
-    m.material = e.ghost ? ghostMaterial : sel ? highlightOf(base) : base;
+    let mat = baseMaterial.get(m);
+    if (colour.scheme) mat = colourMaterial(colour.byMesh ? meshTone.get(m) : e.tone, mat);
+    m.material = e.ghost ? ghostMaterial : sel ? highlightOf(mat) : mat;
   }
+}
+
+// colour by parameter: one material per colour (and transparency), shared by all meshes
+const colourMats = new Map();
+function colourMaterial(tone, base) {
+  const hex = colour.tones[tone] || '#a0a0a0';
+  const opacity = base.transparent ? base.opacity : 1;
+  const key = `${hex}|${opacity}`;
+  let m = colourMats.get(key);
+  if (!m) {
+    // like the exported materials: matte, double-sided, see-through ones keep their transparency
+    m = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(hex), roughness: 0.85, metalness: 0, side: THREE.DoubleSide,
+      transparent: opacity < 1, opacity, depthWrite: opacity >= 1,
+    });
+    m.name = `colour ${hex}`;
+    colourMats.set(key, m);
+  }
+  return m;
 }
 
 // ---------- picking ----------
@@ -269,17 +291,29 @@ function elementAt(ev) {
     let o = hit.object;
     while (o && !byObject.has(o)) o = o.parent;
     const e = o && byObject.get(o);
-    if (e && e.shown && !e.ghost) return o;
+    if (e && e.shown && !e.ghost) return { obj: o, point: hit.point };
   }
   return null;
 }
 
-function select(obj) {
-  if (selected === obj) return;
+/** Selects an element (or nothing). point: where it was clicked, for the Hide / Isolate bar. */
+function select(obj, point = null) {
+  if (selected === obj) {
+    if (obj && point) showPick(byObject.get(obj), point);
+    return;
+  }
   const prev = selected;
   selected = obj;
   if (prev) paint(byObject.get(prev));
-  if (obj) { paint(byObject.get(obj)); showPanel(obj); } else hidePanel();
+  if (obj) {
+    const e = byObject.get(obj);
+    paint(e);
+    showPanel(obj);
+    showPick(e, point);
+  } else {
+    hidePanel();
+    hidePick();
+  }
   document.body.classList.toggle('inspecting', !!obj);
   markListSelection();
 }
@@ -289,20 +323,67 @@ renderer.domElement.addEventListener('pointerdown', (ev) => { down = { x: ev.cli
 renderer.domElement.addEventListener('pointerup', (ev) => {
   if (!down || !model || ev.button !== 0) return;
   const moved = Math.hypot(ev.clientX - down.x, ev.clientY - down.y);
-  if (moved < 6 && performance.now() - down.t < 600) select(elementAt(ev));
+  if (moved < 6 && performance.now() - down.t < 600) {
+    const hit = elementAt(ev);
+    select(hit?.obj ?? null, hit?.point);
+  }
   down = null;
 });
 renderer.domElement.addEventListener('dblclick', () => model && fit(model));
 $('#fit').addEventListener('click', () => model && fit(model));
+
+// Revit's shortcuts for temporary hide / isolate: HH, HI, HC, IC, HR
+let chord = null;
 window.addEventListener('keydown', (ev) => {
   if (ev.target.closest?.('input, textarea, select')) return;
-  if (ev.key === 'Escape') select(null);
-  if ((ev.key === 'f' || ev.key === 'F') && model) fit(selected ?? model);
+  const k = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) {
+    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && k === 'z' && model) { ev.preventDefault(); undoVisibility(); }
+    return;
+  }
+  const e = selected && byObject.get(selected);
+  if (chord && performance.now() - chord.t < 1500) {
+    const pair = chord.key + k;
+    chord = null;
+    const act = { hh: ['hide', 'element'], hi: ['isolate', 'element'], hc: ['hide', 'category'], ic: ['isolate', 'category'] }[pair];
+    if (act && e) { runScope(act[0], act[1], e); return; }
+    if (pair === 'hr') { showAll(); return; }
+  }
+  chord = null;
+  if ((k === 'h' || k === 'i') && model) { chord = { key: k, t: performance.now() }; return; }
+  if (k === 'Escape') {
+    if (!pickMenu.hidden) closePickMenu(true);
+    else select(null);
+  }
+  if (k === 'f' && model) fit(selected ?? model);
 });
 
 // ---------- inspect panel ----------
 const panel = $('#panel');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+const ICONS = {
+  copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></svg>',
+  colour: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-1 2-2 0-1.4-1.2-1.8-1.2-3 0-1.1.9-2 2-2H17a4 4 0 0 0 4-4c0-3.9-4-7-9-7z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/></svg>',
+  filter: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.2 7.4V19l-3.6-1.8v-4.8z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+  hide: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/></svg>',
+  isolate: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="7" height="7" rx="1"/><path d="M3 7V4.5A1.5 1.5 0 0 1 4.5 3H7M17 3h2.5A1.5 1.5 0 0 1 21 4.5V7M21 17v2.5a1.5 1.5 0 0 1-1.5 1.5H17M7 21H4.5A1.5 1.5 0 0 1 3 19.5V17" stroke-dasharray="2 2.2"/></svg>',
+};
+// phones: Hide / Isolate in the inspect sheet (the floating bar has no room there)
+const SHEET_ACTIONS = '<div class="pactions">' + ['hide', 'isolate'].map((a) => {
+  const label = a === 'hide' ? 'Hide' : 'Isolate';
+  return `<div class="split"><button class="pk-main" type="button" data-act="${a}">${ICONS[a]}${label}</button>` +
+    `<button class="pk-more" type="button" data-act="${a}" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to ${a}">▼</button></div>`;
+}).join('') + '</div>';
+const ACTS = '<span class="acts">' +
+  `<button type="button" data-a="copy" title="Copy value" aria-label="Copy value">${ICONS.copy}</button>` +
+  `<button type="button" data-a="colour" title="Colour by this parameter" aria-label="Colour by this parameter">${ICONS.colour}</button>` +
+  `<button type="button" data-a="filter" title="Filter on value" aria-label="Filter on value">${ICONS.filter}</button></span>`;
+
+/** A property row. field: the name Filter and Colour use; raw: the value a filter rule compares. */
+const propRow = (label, field, shown, raw = shown) =>
+  `<tr data-f="${esc(field)}" data-v="${esc(raw)}"><th>${esc(label)}</th><td><span class="val">${esc(shown)}</span>${ACTS}</td></tr>`;
 
 function swatches(obj) {
   const seen = new Map();
@@ -312,21 +393,22 @@ function swatches(obj) {
     if (!seen.has(mat.name)) seen.set(mat.name, mat.userData?.rgb ?? [160, 160, 160]);
   });
   return [...seen].map(([name, rgb]) =>
-    `<li><span class="sw" style="background:rgb(${rgb.join(',')})"></span>${esc(name)}</li>`).join('');
+    `<li data-f="Material" data-v="${esc(name)}"><span class="sw" style="background:rgb(${rgb.join(',')})"></span>` +
+    `<span class="val">${esc(name)}</span>${ACTS}</li>`).join('');
 }
 
 function table(obj) {
-  return Object.keys(obj ?? {}).sort((a, b) => a.localeCompare(b))
-    .map((k) => `<tr><th>${esc(k)}</th><td>${esc(obj[k])}</td></tr>`).join('');
+  return Object.keys(obj ?? {}).sort((a, b) => a.localeCompare(b)).map((k) => propRow(k, k, obj[k])).join('');
 }
 
 function showPanel(obj) {
   const d = obj.userData;
   const rows = [
-    ['Family', d.family], ['Level', d.level], ['Mark', d.mark], ['Comments', d.comments],
-    ['Volume', d.volume_m3 ? `${d.volume_m3.toLocaleString(undefined, { maximumFractionDigits: 3 })} m³` : null],
-    ['Linked model', d.link],
-  ].filter(([, v]) => v != null && v !== '');
+    ['Category', 'Category', d.category], ['Family', 'Family', d.family], ['Type', 'Type', d.type],
+    ['Level', 'Level', d.level], ['Mark', 'Mark', d.mark], ['Comments', 'Comments', d.comments],
+    ['Volume', 'Volume (m³)', d.volume_m3 ? `${d.volume_m3.toLocaleString(undefined, { maximumFractionDigits: 3 })} m³` : null, d.volume_m3],
+    ['Linked model', 'Link', d.link],
+  ].filter(([, , v]) => v != null && v !== '');
   const nInst = Object.keys(d.params ?? {}).length, nType = Object.keys(d.typeParams ?? {}).length;
   panel.innerHTML = `
     <header>
@@ -339,7 +421,8 @@ function showPanel(obj) {
       <button id="copy" class="ghost" type="button">Copy</button>
       <button id="zoom" class="ghost" type="button">Zoom to</button>
     </div>
-    <table class="key">${rows.map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td></tr>`).join('')}</table>
+    ${SHEET_ACTIONS}
+    <table class="key">${rows.map((r) => propRow(...r)).join('')}</table>
     <h3>Materials</h3>
     <ul class="mats">${swatches(obj)}</ul>
     <details><summary>Instance parameters <span>${nInst}</span></summary><table>${table(d.params)}</table></details>
@@ -361,6 +444,31 @@ function showPanel(obj) {
   };
 }
 function hidePanel() { panel.hidden = true; panel.innerHTML = ''; }
+
+// row actions; on touch screens a tap on the row shows them
+panel.addEventListener('click', async (ev) => {
+  const item = ev.target.closest('[data-f]');
+  const b = ev.target.closest('.acts button');
+  if (!item) return;
+  if (!b) {
+    const open = !item.classList.contains('open');
+    for (const x of panel.querySelectorAll('.open')) x.classList.remove('open');
+    item.classList.toggle('open', open);
+    return;
+  }
+  const field = item.dataset.f, value = item.dataset.v;
+  if (b.dataset.a === 'copy') {
+    const ok = await copyText(item.querySelector('.val').textContent);
+    const icon = b.innerHTML;
+    b.innerHTML = ok ? ICONS.check : icon;
+    b.title = ok ? 'Copied' : 'Copy failed';
+    setTimeout(() => { b.innerHTML = icon; b.title = 'Copy value'; }, 1400);
+  } else if (b.dataset.a === 'colour') {
+    colourBy(field);
+  } else {
+    filterOnValue(field, value);
+  }
+});
 
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch { /* try the old way */ }
@@ -444,12 +552,31 @@ function applyFilter() {
   for (const e of elements) {
     e.match = !active || matches(e, filter, resolveName);
     if (e.match) n++;
+  }
+  $('#f-count').textContent = active ? `${n} of ${elements.length} elements` : `${elements.length} elements`;
+  const badge = $('#tb-filter-n');
+  badge.hidden = !active;
+  badge.textContent = String(n);
+  applyVisibility();
+}
+const applyFilterSoon = debounce(applyFilter, 120);
+
+// ---------- hide / isolate (on top of the filter) ----------
+// hidden: elements hidden by hand; isolated: when set, only these can show.
+const manual = { hidden: new Set(), isolated: null, undo: [] };
+const handHidden = (e) => manual.hidden.has(e.i) || (manual.isolated != null && !manual.isolated.has(e.i));
+
+/** Shows, hides and ghosts every element from the filter result and the hand-made hide / isolate. */
+function applyVisibility() {
+  const active = filterActive(filter);
+  for (const e of elements) {
     let shown = true, ghost = false;
     if (active) {
       if (resultMode === 'isolate') shown = e.match;
       else if (resultMode === 'ghost') ghost = !e.match;
       else shown = !e.match;
     }
+    if (handHidden(e)) { shown = false; ghost = false; }
     const repaint = ghost !== e.ghost;
     e.shown = shown;
     e.ghost = ghost;
@@ -460,20 +587,190 @@ function applyFilter() {
     const s = byObject.get(selected);
     if (!s.shown || s.ghost) select(null);
   }
-  $('#f-count').textContent = active ? `${n} of ${elements.length} elements` : `${elements.length} elements`;
-  const badge = $('#tb-filter-n');
-  badge.hidden = !active;
-  badge.textContent = String(n);
   renderList();
+  renderVisibility();
+  syncLegend();
   if (explode.f > 0) updateExplode();
 }
-const applyFilterSoon = debounce(applyFilter, 120);
+
+function remember() {
+  manual.undo.push({ hidden: new Set(manual.hidden), isolated: manual.isolated && new Set(manual.isolated) });
+  if (manual.undo.length > 50) manual.undo.shift();
+}
+function hideElements(list) {
+  remember();
+  for (const e of list) manual.hidden.add(e.i);
+  applyVisibility();
+}
+function isolateElements(list) {
+  remember();
+  manual.isolated = new Set(list.map((e) => e.i));
+  for (const e of list) manual.hidden.delete(e.i);
+  applyVisibility();
+}
+/** Makes hand-hidden elements visible again (the filter still applies). */
+function revealElements(list) {
+  remember();
+  for (const e of list) { manual.hidden.delete(e.i); manual.isolated?.add(e.i); }
+  applyVisibility();
+}
+function showAll() {
+  if (!manual.hidden.size && !manual.isolated) return;
+  remember();
+  manual.hidden.clear();
+  manual.isolated = null;
+  applyVisibility();
+}
+function undoVisibility() {
+  const last = manual.undo.pop();
+  if (!last) return;
+  manual.hidden = last.hidden;
+  manual.isolated = last.isolated;
+  applyVisibility();
+}
+
+function renderVisibility() {
+  const h = manual.hidden.size, iso = manual.isolated;
+  const n = (k) => `${k} element${k === 1 ? '' : 's'}`;
+  $('#vis').hidden = !h && !iso;
+  $('#vis-text').textContent = [iso && `Isolated: ${n(iso.size)}`, h && `Hidden: ${n(h)}`].filter(Boolean).join(' · ');
+  $('#vis-undo').disabled = !manual.undo.length;
+}
+
+/** Elements like e: the same element, type, family, category or level. */
+const SCOPES = [
+  { id: 'element', label: 'This element', like: (x, e) => x === e },
+  { id: 'type', label: 'Same type', like: (x, e) => x.d.category === e.d.category && x.d.family === e.d.family && x.d.type === e.d.type },
+  { id: 'family', label: 'Same family', like: (x, e) => x.d.category === e.d.category && x.d.family === e.d.family },
+  { id: 'category', label: 'Same category', like: (x, e) => x.d.category === e.d.category },
+  { id: 'level', label: 'Same level', like: (x, e) => !!e.d.level && x.d.level === e.d.level, when: (e) => !!e.d.level },
+];
+const alike = (e, scope) => elements.filter((x) => SCOPES.find((s) => s.id === scope).like(x, e));
+function runScope(action, scope, e) {
+  const list = alike(e, scope);
+  if (action === 'hide') hideElements(list); else isolateElements(list);
+}
+
+// ---------- Hide / Isolate: a bar at the clicked point (in the inspect sheet on phones) ----------
+const pickBar = $('#pick'), pickDot = $('#pick-dot'), pickMenu = $('#pk-menu');
+const pickAt = new THREE.Vector3();     // the clicked point, without the explode offset
+const pickNdc = new THREE.Vector3();
+let pickSize = null;
+
+function showPick(e, point) {
+  pickAt.copy(point ? point.clone().sub(e.offset) : e.center0);
+  closePickMenu();
+  pickBar.hidden = false;
+  pickDot.hidden = false;
+  pickSize = { w: pickBar.offsetWidth, h: pickBar.offsetHeight };
+  placePick();
+}
+function hidePick() {
+  closePickMenu();
+  pickBar.hidden = true;
+  pickDot.hidden = true;
+}
+
+/** Where the bar and dot may go: the window, less the inspect panel (right side, or bottom on phones). */
+function freeArea() {
+  const W = viewport.clientWidth, H = viewport.clientHeight, g = 8;
+  const a = { l: g, t: g, r: W - g, b: H - g };
+  if (!panel.hidden) {
+    const p = panel.getBoundingClientRect();
+    if (p.left > W * 0.3) a.r = p.left - g; else a.b = p.top - g;
+  }
+  return a;
+}
+
+/** Keeps the bar beside the clicked point as the camera moves; the dot only while the point is in view. */
+function placePick() {
+  if (pickBar.hidden || !selected) return;
+  const e = byObject.get(selected);
+  pickNdc.copy(pickAt).add(e.offset).project(camera);
+  const W = viewport.clientWidth, H = viewport.clientHeight;
+  const x = ((pickNdc.x + 1) / 2) * W, y = ((1 - pickNdc.y) / 2) * H;
+  const a = freeArea();
+  const front = pickNdc.z < 1;
+  const inside = front && x >= a.l && x <= a.r && y >= a.t && y <= a.b;
+  pickDot.style.visibility = inside ? '' : 'hidden';
+  if (inside) pickDot.style.transform = `translate(${x}px, ${y}px)`;
+  if (!front || !pickSize.w) return;   // behind the camera, or the bar is not shown (phones)
+  const { w, h } = pickSize;
+  const px = Math.max(a.l, Math.min(x - w / 2, a.r - w));
+  let py = y - h - 18;
+  if (py < a.t) py = y + 18;
+  py = Math.max(a.t, Math.min(py, a.b - h));
+  pickBar.style.transform = `translate(${Math.round(px)}px, ${Math.round(py)}px)`;
+}
+
+/** The menu of a ▼ button: this element, same type, family, category or level. */
+function openPickMenu(action, opener) {
+  const e = byObject.get(selected);
+  const verb = action === 'hide' ? 'Hide' : 'Isolate';
+  pickMenu.innerHTML = SCOPES.filter((s) => !s.when || s.when(e)).map((s) => {
+    const n = s.id === 'element' ? 1 : alike(e, s.id).length;
+    const what = { type: e.d.type, family: e.d.family, category: e.d.category, level: e.d.level }[s.id];
+    return `<button type="button" role="menuitem" data-scope="${s.id}" title="${esc(verb)}${what ? `: ${esc(what)}` : ''}">` +
+      `<span>${esc(s.label)}</span><span class="n">${n}</span></button>`;
+  }).join('');
+  pickMenu.dataset.action = action;
+  pickMenu.setAttribute('aria-label', `${verb}…`);
+  for (const b of document.querySelectorAll('.pk-more')) b.setAttribute('aria-expanded', String(b === opener));
+  pickMenu.hidden = false;
+  // under the button, or above it when there is no room below
+  const r = opener.closest('.pk-act, .split').getBoundingClientRect();
+  const mw = pickMenu.offsetWidth, mh = pickMenu.offsetHeight, W = innerWidth, H = innerHeight;
+  const left = Math.max(8, Math.min(r.left, W - mw - 8));
+  const top = r.bottom + 6 + mh <= H - 8 ? r.bottom + 6 : Math.max(8, r.top - 6 - mh);
+  pickMenu.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+  pickMenu.querySelector('button')?.focus();
+}
+function closePickMenu(refocus = false) {
+  if (pickMenu.hidden) return;
+  const opener = document.querySelector('.pk-more[aria-expanded="true"]');
+  pickMenu.hidden = true;
+  for (const b of document.querySelectorAll('.pk-more')) b.setAttribute('aria-expanded', 'false');
+  if (refocus) opener?.focus();
+}
+
+function setupPick() {
+  // the floating bar and the row in the inspect sheet share these handlers
+  document.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.pk-main[data-act], .pk-more[data-act]');
+    if (!b || !selected) return;
+    if (b.classList.contains('pk-main')) runScope(b.dataset.act, 'element', byObject.get(selected));
+    else if (!pickMenu.hidden && b.getAttribute('aria-expanded') === 'true') closePickMenu();
+    else openPickMenu(b.dataset.act, b);
+  });
+  $('#pk-close').addEventListener('click', () => select(null));
+  pickMenu.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-scope]');
+    if (!b || !selected) return;
+    const action = pickMenu.dataset.action;
+    closePickMenu();
+    runScope(action, b.dataset.scope, byObject.get(selected));
+  });
+  pickMenu.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+    ev.preventDefault();
+    const items = [...pickMenu.querySelectorAll('button')];
+    const i = items.indexOf(document.activeElement);
+    items[(i + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
+  });
+  // the menu stays where it opened: close it when the view moves or something else is clicked
+  document.addEventListener('pointerdown', (ev) => {
+    if (!pickMenu.hidden && !pickMenu.contains(ev.target) && !ev.target.closest('.pk-more')) closePickMenu();
+  });
+  renderer.domElement.addEventListener('wheel', () => closePickMenu(), { passive: true });
+  $('#vis-undo').addEventListener('click', undoVisibility);
+  $('#vis-all').addEventListener('click', showAll);
+}
 
 function renderList() {
   const list = $('#f-list');
   const shownItems = listOrder.filter((e) => e.match);
   const items = shownItems.slice(0, LIST_LIMIT).map((e) =>
-    `<li><button type="button" data-i="${e.i}"${selected === e.obj ? ' aria-current="true"' : ''}>` +
+    `<li><button type="button" data-i="${e.i}"${selected === e.obj ? ' aria-current="true"' : ''}${handHidden(e) ? ' class="off"' : ''}>` +
     `<span class="cat">${esc(e.d.category)}</span><span class="nm">${esc(e.d.type || e.d.family || '')}</span>` +
     `<code>${esc(e.d.id)}</code></button></li>`);
   if (shownItems.length > LIST_LIMIT) {
@@ -601,6 +898,7 @@ function setupFilter() {
     const b = ev.target.closest('button[data-i]');
     if (!b) return;
     const e = elements[Number(b.dataset.i)];
+    if (handHidden(e)) revealElements([e]);   // picked from the list: show it again
     select(e.obj);
     fit(e.obj);
   });
@@ -620,8 +918,172 @@ function setupFilter() {
 
 // ---------- tools ----------
 function togglePanel(button, section, open = section.hidden) {
+  // phones have room for one tool panel at a time
+  if (open && matchMedia('(max-width: 640px)').matches) {
+    for (const b of document.querySelectorAll('#tools .tool[aria-controls]')) {
+      if (b === button) continue;
+      b.setAttribute('aria-expanded', 'false');
+      document.getElementById(b.getAttribute('aria-controls')).hidden = true;
+    }
+  }
   section.hidden = !open;
   button.setAttribute('aria-expanded', String(open));
+}
+
+// ---------- colour by parameter ----------
+// field: parameter name; kind: auto | values | range. Material colours each part of an
+// element by its own material (meshTone); other fields colour the whole element (e.tone).
+const colour = { field: '', kind: 'auto', scheme: null, byMesh: false, tones: {} };
+const meshTone = new Map();
+const TONES = [...Array.from({ length: SLOTS }, (_, i) => `s${i + 1}`), ...Array.from({ length: BINS }, (_, i) => `q${i + 1}`), 'other', 'none'];
+const OTHER_LIST_LIMIT = 200;
+
+function readTones() {
+  const css = getComputedStyle(document.documentElement);
+  return Object.fromEntries(TONES.map((t) => [t, css.getPropertyValue(`--cb-${t}`).trim()]));
+}
+
+const meshMaterialName = (m) => baseMaterial.get(m).name || 'Default';
+
+function applyColour() {
+  const name = colour.field.trim() ? resolveName(colour.field.trim()) : '';
+  meshTone.clear();
+  if (!name) {
+    colour.scheme = null;
+    for (const e of elements) { e.tone = null; e.colourEntries = null; }
+  } else {
+    colour.byMesh = name === 'Material';
+    const items = elements.map((e) => colour.byMesh
+      ? [...new Set(e.meshes.map(meshMaterialName))]
+      : valueKey(fieldValue(e.d, name)));
+    const s = colourScheme(items, colour.kind);
+    colour.scheme = s;
+    elements.forEach((e, i) => {
+      if (colour.byMesh) {
+        for (const m of e.meshes) meshTone.set(m, s.entries[s.entryOf(meshMaterialName(m))].tone);
+        e.tone = null;
+        e.colourEntries = [...new Set(items[i].map((k) => s.entryOf(k)))];
+      } else {
+        const idx = s.entryOf(items[i]);
+        e.tone = s.entries[idx].tone;
+        e.colourEntries = [idx];
+      }
+    });
+  }
+  colour.tones = readTones();
+  for (const e of elements) paint(e);
+  renderLegend();
+}
+
+/** Theme switched: the colours come from the page tokens, so rebuild the colour materials. */
+function refreshColourTheme() {
+  colour.tones = readTones();
+  for (const m of colourMats.values()) {
+    highlights.get(m)?.dispose();
+    highlights.delete(m);
+    m.dispose();
+  }
+  colourMats.clear();
+  for (const e of elements) paint(e);
+}
+
+function renderLegend() {
+  const s = colour.scheme;
+  const legend = $('#c-legend'), note = $('#c-note');
+  const field = colour.field.trim() ? resolveName(colour.field.trim()) : '';
+  for (const b of document.querySelectorAll('#c-quick button')) b.setAttribute('aria-pressed', String(b.dataset.field === field));
+  $('#tb-colour-dot').hidden = !s;
+  const kinds = document.querySelectorAll('#c-kind button');
+  for (const b of kinds) {
+    b.setAttribute('aria-pressed', String(!!s && b.dataset.kind === s.kind));
+    b.disabled = !s || (b.dataset.kind === 'range' && !s.canRange);
+  }
+  if (!s) {
+    legend.innerHTML = '';
+    note.textContent = 'Pick a parameter: each value gets its own colour. Clicked properties have a colour button too.';
+    return;
+  }
+  const valued = s.entries.filter((en) => en.tone !== 'none');
+  if (s.kind === 'range') {
+    note.textContent = `Up to ${BINS} steps with about as many elements in each, light (small) to dark (large). Untick a row to hide those elements.`;
+  } else {
+    const other = s.entries.find((en) => en.tone === 'other');
+    const nValues = valued.length - (other ? 1 : 0) + (other ? other.keys.length : 0);
+    note.textContent = other
+      ? `${nValues} values: the ${SLOTS} most common have colours, the rest are grey. Untick a row to hide those elements.`
+      : `${nValues} value${nValues === 1 ? '' : 's'}. Untick a row to hide those elements.`;
+  }
+  legend.innerHTML = s.entries.map((en, i) => {
+    let more = '';
+    if (en.keys?.length) {
+      const shown = en.keys.slice(0, OTHER_LIST_LIMIT).map((k) =>
+        `<li><span class="v">${esc(k.label)}</span><span class="c">${k.count}</span></li>`).join('');
+      const extra = en.keys.length > OTHER_LIST_LIMIT ? `<li>…and ${en.keys.length - OTHER_LIST_LIMIT} more</li>` : '';
+      more = `<details><summary>${en.keys.length} value${en.keys.length === 1 ? '' : 's'}</summary><ul>${shown}${extra}</ul></details>`;
+    }
+    return `<li><label><input type="checkbox" checked data-entry="${i}">` +
+      `<span class="sw" style="background:var(--cb-${en.tone})"></span><span class="v">${esc(en.label)}</span>` +
+      `<span class="c">${en.count}</span></label>${more}</li>`;
+  }).join('');
+  syncLegend();
+}
+
+/** Legend ticks follow hide / isolate: a row is ticked while any of its elements may show. */
+function syncLegend() {
+  const s = colour.scheme;
+  if (!s) return;
+  const on = new Array(s.entries.length).fill(false);
+  for (const e of elements) if (!handHidden(e)) for (const i of e.colourEntries) on[i] = true;
+  for (const cb of document.querySelectorAll('#c-legend input[data-entry]')) cb.checked = on[Number(cb.dataset.entry)];
+}
+
+function colourBy(field) {
+  colour.field = field;
+  colour.kind = 'auto';
+  $('#c-field').value = field;
+  togglePanel($('#tb-colour'), $('#colour'), true);
+  applyColour();
+}
+
+function setupColour() {
+  const input = $('#c-field');
+  const known = (v) => canonicalName.has(v.trim().toLocaleLowerCase());
+  // apply when the name is complete: a known parameter while typing, anything on Enter / leaving the box
+  input.addEventListener('input', () => {
+    if (!input.value.trim() || known(input.value)) { colour.field = input.value; colour.kind = 'auto'; applyColour(); }
+  });
+  input.addEventListener('change', () => {
+    if (input.value !== colour.field) { colour.field = input.value; colour.kind = 'auto'; applyColour(); }
+  });
+  $('#c-quick').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-field]');
+    if (b) colourBy(b.dataset.field);
+  });
+  for (const b of document.querySelectorAll('#c-kind button')) {
+    b.addEventListener('click', () => { colour.kind = b.dataset.kind; applyColour(); });
+  }
+  $('#c-off').addEventListener('click', () => { colour.field = ''; input.value = ''; applyColour(); });
+  $('#c-legend').addEventListener('change', (ev) => {
+    const cb = ev.target.closest('input[data-entry]');
+    if (!cb) return;
+    const i = Number(cb.dataset.entry);
+    const group = elements.filter((e) => e.colourEntries?.includes(i));
+    if (cb.checked) revealElements(group); else hideElements(group);
+  });
+  renderLegend();
+}
+
+/** "Filter on value" in the inspect panel: one rule, field = value, in place of an earlier one for the field. */
+function filterOnValue(field, value) {
+  const rule = String(value ?? '').trim() === ''
+    ? { name: field, op: 'hasnot', value: '' }
+    : { name: field, op: 'eq', value: String(value) };
+  const key = field.toLocaleLowerCase();
+  const i = filter.rules.findIndex((r) => r.name.trim().toLocaleLowerCase() === key && (r.op === 'eq' || r.op === 'hasnot'));
+  if (i >= 0) filter.rules[i] = rule; else filter.rules.push(rule);
+  renderRules();
+  togglePanel($('#tb-filter'), $('#filter'), true);
+  applyFilter();
 }
 
 function downloadGlb() {
@@ -639,10 +1101,14 @@ function downloadGlb() {
 function setupTools() {
   setupExplode();
   setupFilter();
-  const tbExplode = $('#tb-explode'), tbFilter = $('#tb-filter');
+  setupColour();
+  setupPick();
+  const tbExplode = $('#tb-explode'), tbFilter = $('#tb-filter'), tbColour = $('#tb-colour');
   tbExplode.addEventListener('click', () => togglePanel(tbExplode, $('#explode')));
   tbFilter.addEventListener('click', () => togglePanel(tbFilter, $('#filter')));
+  tbColour.addEventListener('click', () => togglePanel(tbColour, $('#colour')));
   $('#f-close').addEventListener('click', () => togglePanel(tbFilter, $('#filter'), false));
+  $('#c-close').addEventListener('click', () => togglePanel(tbColour, $('#colour'), false));
   $('#tb-download').addEventListener('click', downloadGlb);
   $('#side').hidden = false;
 }
@@ -659,6 +1125,7 @@ renderer.setAnimationLoop((now) => {
     if (flight.t >= 1) flight = null;
   }
   controls.update();
+  placePick();
   renderer.render(scene, camera);
 });
 
@@ -670,11 +1137,20 @@ window.viewer = {
   elements: () => elements.map((e) => ({
     id: e.d.id, category: e.d.category, link: e.d.link ?? null, match: e.match, shown: e.shown, ghost: e.ghost,
     position: e.obj.position.toArray(), original: e.orig.toArray(),
+    tones: colour.scheme ? [...new Set(e.meshes.map((m) => (colour.byMesh ? meshTone.get(m) : e.tone)))] : null,
+    // the colours drawn now (sRGB hex), one per mesh
+    colours: e.meshes.map((m) => `#${m.material.color.getHexString()}`),
   })),
   state: () => ({
     explode: { mode: explode.mode, amount: explode.f, animating: !!explode.anim },
     filterActive: filterActive(filter), resultMode,
     selected: selected ? selected.userData.id : null,
+    hidden: manual.hidden.size, isolated: manual.isolated ? manual.isolated.size : null, undo: manual.undo.length,
+    colour: colour.scheme ? {
+      field: resolveName(colour.field.trim()), kind: colour.scheme.kind, canRange: colour.scheme.canRange,
+      entries: colour.scheme.entries.map(({ label, tone, count }) => ({ label, tone, count })),
+      tones: colour.tones,
+    } : null,
   }),
   /** Screen position (client px) of an element's current centre. */
   screenPoint(id) {
