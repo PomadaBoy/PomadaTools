@@ -146,7 +146,9 @@ def main():
 
     output = script.get_output()
     output.set_title(TITLE)
-    cats = sorted(result.PerCategory, key=lambda c: (-result.PerCategory[c], c))
+    # .Keys: looping over a .NET Dictionary itself gives KeyValuePairs in IronPython
+    per_category = dict((c, result.PerCategory[c]) for c in result.PerCategory.Keys)
+    cats = sorted(per_category, key=lambda c: (-per_category[c], c))
     print(u"Exported 3D view \"{}\" of {}".format(view.Name, doc.Title))
     print(u"File: {}".format(path))
     print(u"{:,} elements, {:,} triangles, {} materials".format(result.Elements, result.Triangles, result.Materials))
@@ -154,7 +156,7 @@ def main():
         print(u"{:,} of the elements are from linked models".format(result.LinkElements))
     if result.SkippedRebar:
         print(u"{:,} reinforcement elements left out".format(result.SkippedRebar))
-    print(u", ".join(u"{} {}".format(c, result.PerCategory[c]) for c in cats))
+    print(u", ".join(u"{} {}".format(c, per_category[c]) for c in cats))
     print(u"{} file ({} model), {:.1f} s".format(size_text(result.FileBytes), size_text(result.GlbBytes),
                                                  time.time() - started))
     for w in list(result.Warnings)[:20]:
