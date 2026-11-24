@@ -159,6 +159,12 @@ namespace RevitThreeExport.Tests
                 elements.Add(f);
             }
 
+            // a foundation pad 3 x 1.5 x 1.2 m turned 25° to the grid, like a skewed bridge's: the
+            // laser must measure it along its own edges
+            double px = bx + Bays * Bay + 6, py = by - 10;
+            elements.Add(Box(scene, 700100, "Structural Foundations", "Footing-Rectangular", "Temelj 200x200", "Nula", origin,
+                px - 1.5, py - 0.75, -1.2, px + 1.5, py + 0.75, 0, new[] { 0 }, rng, "Novi most", rotateDeg: 25));
+
             scene.Elements.AddRange(elements
                 .OrderBy(e => e.Category, StringComparer.Create(CultureInfo.InvariantCulture, false))
                 .ThenBy(e => (long)e.Extras["id"]));
@@ -166,13 +172,14 @@ namespace RevitThreeExport.Tests
         }
 
         private static GlbElement Box(GlbScene scene, long id, string category, string family, string type, string level,
-            double[] origin, double x0, double y0, double z0, double x1, double y1, double z1, int[] mats, Random rng, string dilatacija)
+            double[] origin, double x0, double y0, double z0, double x1, double y1, double z1, int[] mats, Random rng, string dilatacija,
+            double rotateDeg = 0)
         {
             var e = new GlbElement { Category = category, NodeName = category + " – " + type + " [" + id + "]", MeshName = id.ToString(C) };
             if (mats.Length == 1)
             {
                 var prim = new GlbPrimitive { Material = mats[0] };
-                TestUtil.AddBox(prim, x0, y0, z0, x1, y1, z1, origin);
+                TestUtil.AddBox(prim, x0, y0, z0, x1, y1, z1, origin, rotateDeg: rotateDeg);
                 e.Primitives.Add(prim);
             }
             else

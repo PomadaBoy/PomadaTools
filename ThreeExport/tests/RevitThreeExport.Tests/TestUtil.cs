@@ -131,8 +131,9 @@ namespace RevitThreeExport.Tests
         /// chunk of 4 vertices per face, as Revit tessellates a solid face by face.
         /// <paramref name="faces"/> picks which faces to add (bit i = BoxFaces[i]).
         /// </summary>
+        /// <summary>A box; rotateDeg turns it in plan about its centre (counter-clockwise).</summary>
         public static void AddBox(GlbPrimitive p, double x0, double y0, double z0, double x1, double y1, double z1,
-            double[] origin = null, int faces = 0x3F)
+            double[] origin = null, int faces = 0x3F, double rotateDeg = 0)
         {
             var o = origin ?? new double[3];
             double[][] c =
@@ -140,6 +141,16 @@ namespace RevitThreeExport.Tests
                 new[] { x0, y0, z0 }, new[] { x1, y0, z0 }, new[] { x1, y1, z0 }, new[] { x0, y1, z0 },
                 new[] { x0, y0, z1 }, new[] { x1, y0, z1 }, new[] { x1, y1, z1 }, new[] { x0, y1, z1 },
             };
+            if (rotateDeg != 0)
+            {
+                double cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, a = rotateDeg * Math.PI / 180, cos = Math.Cos(a), sin = Math.Sin(a);
+                foreach (var v in c)
+                {
+                    double dx = v[0] - cx, dy = v[1] - cy;
+                    v[0] = cx + dx * cos - dy * sin;
+                    v[1] = cy + dx * sin + dy * cos;
+                }
+            }
             for (var f = 0; f < 6; f++)
             {
                 if ((faces & (1 << f)) == 0) continue;
