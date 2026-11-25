@@ -145,6 +145,12 @@ namespace RevitThreeExport.Tests
             p["Area"] = "171 m²";
             p["Length"] = "13.8000";
             p["Base Offset"] = "25.0280";
+            // the exact values behind the rounded text, as the exporter writes them
+            var pn = (JsonObject)special.Extras["paramNumbers"];
+            pn["Volume"] = 8.5254;
+            pn["Area"] = 170.5128;
+            pn["Length"] = 13.8;
+            pn["Base Offset"] = 25.028;
             elements.Add(special);
 
             // three foundations from a linked model, as the exporter writes them
@@ -215,6 +221,14 @@ namespace RevitThreeExport.Tests
             string mark = null, comments = null;
             if (id % 7 == 0) { mark = "M-" + (id % 1000).ToString(C); ps["Mark"] = mark; }
             if (id % 11 == 0) { comments = "Provjeriti – šđčćž"; ps["Comments"] = comments; }
+            // exact values of the number parameters (the text above is rounded, as in Revit)
+            var pn = new JsonObject
+            {
+                { "Volume", Math.Round(volume, 9) },
+                { "Area", Math.Round(area, 9) },
+                { "Length", Math.Round(length, 9) },
+                { "Base Offset", 0.0 },
+            };
             var tp = new JsonObject
             {
                 { "Family Name", family },
@@ -236,6 +250,8 @@ namespace RevitThreeExport.Tests
                 { "materials", mats.Select(i => scene.Materials[i]).OrderBy(m => m.RevitMaterialId).Select(m => m.Name).ToList() },
                 { "params", ps },
                 { "typeParams", tp },
+                { "paramNumbers", pn },
+                { "typeParamNumbers", new JsonObject { { "Width", Math.Round(Math.Min(dx, dy), 9) } } },
             };
             return e;
         }

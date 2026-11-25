@@ -11,7 +11,9 @@ namespace RevitThreeExport
     /// Element metadata in the prototype's format (revit_export.py: pval, params_of,
     /// type_names). Keys: id, uniqueId, category, family, type, level, mark, comments,
     /// volume_m3, materials, params, typeParams, and link / linkInstanceId for elements
-    /// from linked models.
+    /// from linked models. paramNumbers / typeParamNumbers: the unrounded value of each
+    /// number parameter, in the unit its display text uses (params has "86 m²", paramNumbers
+    /// 86.3712), so quantity totals match Revit's schedules.
     /// </summary>
     internal sealed class MetadataCollector
     {
@@ -22,7 +24,7 @@ namespace RevitThreeExport
         private readonly bool _typeParams;
         private readonly Options _hostOptions;
         private readonly Options _linkOptions;
-        private readonly Dictionary<string, JsonObject> _typeCache = new Dictionary<string, JsonObject>();
+        private readonly Dictionary<string, JsonObject[]> _typeCache = new Dictionary<string, JsonObject[]>();
         private readonly Dictionary<string, string[]> _typeNames = new Dictionary<string, string[]>();
         private readonly Dictionary<long, bool> _styleHidden = new Dictionary<long, bool>();
 
@@ -49,6 +51,9 @@ namespace RevitThreeExport
             var doc = rec.Frame.Doc;
             var e = rec.Element;
             var names = TypeNames(doc, e);
+            var numbers = new JsonObject();
+            var ps = ParamsOf(doc, e, numbers);
+            var type = _typeParams ? TypeParams(doc, e) : new[] { new JsonObject(), new JsonObject() };
             var o = new JsonObject
             {
                 { "id", rec.IdValue },
@@ -66,8 +71,10 @@ namespace RevitThreeExport
                         .OrderBy(m => m.RevitMaterialId)
                         .Select(m => m.Name ?? "Default").ToList()
                 },
-                { "params", ParamsOf(doc, e) },
-                { "typeParams", _typeParams ? TypeParams(doc, e) : new JsonObject() },
+                { "params", ps },
+                { "typeParams", type[0] },
+                { "paramNumbers", numbers },
+                { "typeParamNumbers", type[1] },
             };
             if (rec.Frame.IsLink)
             {
@@ -169,7 +176,11 @@ namespace RevitThreeExport
             return s.Replace("E+", "e+").Replace("E-", "e-");
         }
 
-        public static JsonObject ParamsOf(Document doc, Element el)
+        /// <summary>
+        /// Every parameter with a value, as display text. numbers (optional) gets the exact
+        /// value of each number parameter, in its display unit.
+        /// </summary>
+        public static JsonObject ParamsOf(Document doc, Element el, JsonObject numbers = null)
         {
             var o = new JsonObject();
             if (el == null) return o;
@@ -181,21 +192,58 @@ namespace RevitThreeExport
                 try { name = p.Definition?.Name; } catch { continue; }
                 if (string.IsNullOrEmpty(name)) continue;
                 var v = Pval(doc, p);
-                if (!string.IsNullOrEmpty(v)) o[name] = v;
+                if (string.IsNullOrEmpty(v)) continue;
+                o[name] = v;
+                if (numbers != null)
+                {
+                    var n = Number(p);
+                    if (n.HasValue) numbers[name] = n.Value;
+                    else if (numbers.ContainsKey(name)) numbers[name] = null;   // the text is now another parameter's
+                }
             }
             return o;
         }
 
-        private JsonObject TypeParams(Document doc, Element e)
+        /// <summary>
+        /// The value of a number (Double) parameter, unrounded, in the unit Revit displays it
+        /// in (m², cm³, mm ...); null for text, Yes/No, integer and element parameters.
+        /// </summary>
+        public static double? Number(Parameter p)
         {
-            if (e == null) return new JsonObject();
+            try
+            {
+                if (!p.HasValue || p.StorageType != StorageType.Double) return null;
+                var v = p.AsDouble();
+                ForgeTypeId unit = null;
+                try { unit = p.GetUnitTypeId(); } catch { unit = null; }   // not a measurable spec: no unit
+                if (unit != null && !unit.Empty()) v = UnitUtils.ConvertFromInternalUnits(v, unit);
+                if (double.IsNaN(v) || double.IsInfinity(v)) return null;
+                return RoundSignificant(v, 10);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>v with at most <paramref name="digits"/> significant digits (no float noise like 7200.0000000001).</summary>
+        internal static double RoundSignificant(double v, int digits)
+        {
+            if (v == 0) return 0;
+            var scale = Math.Pow(10, digits - 1 - (int)Math.Floor(Math.Log10(Math.Abs(v))));
+            return scale > 1e15 ? v : Math.Round(v * scale) / scale;
+        }
+
+        /// <summary>The type's parameters: [display text, exact numbers].</summary>
+        private JsonObject[] TypeParams(Document doc, Element e)
+        {
+            var none = new[] { new JsonObject(), new JsonObject() };
+            if (e == null) return none;
             ElementId typeId;
-            try { typeId = e.GetTypeId(); } catch { return new JsonObject(); }
-            if (Ids.Of(typeId) < 0) return new JsonObject();
+            try { typeId = e.GetTypeId(); } catch { return none; }
+            if (Ids.Of(typeId) < 0) return none;
             var key = doc.GetHashCode() + ":" + Ids.Of(typeId);
             if (!_typeCache.TryGetValue(key, out var o))
             {
-                o = ParamsOf(doc, doc.GetElement(typeId));
+                var numbers = new JsonObject();
+                o = new[] { ParamsOf(doc, doc.GetElement(typeId), numbers), numbers };
                 _typeCache[key] = o;
             }
             return o;
