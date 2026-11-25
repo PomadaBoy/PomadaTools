@@ -15,6 +15,8 @@ import { colourScheme, valueKey, SLOTS, BINS } from './colour.js';
 import { Cuts } from './cuts.js';
 import { Measure } from './measure.js';
 import { REVIT_AXES, snapNormal, nearestWithin, metres, toRevit, faceEdgeDirection } from './geom.js';
+import { buildQto, cellText, toCsv, toSheet, compileFormula, AGGREGATES, VARIES } from './qto.js';
+import { xlsx } from './xlsx.js';
 
 const $ = (s) => document.querySelector(s);
 const viewport = $('#viewport');
@@ -268,7 +270,7 @@ function highlightOf(base) {
   return hl;
 }
 function paint(e) {
-  const sel = selected === e.obj;
+  const sel = selected === e.obj || marked.has(e.i);
   for (const m of e.meshes) {
     let mat = baseMaterial.get(m);
     if (colour.scheme) mat = colourMaterial(colour.byMesh ? meshTone.get(m) : e.tone, mat);
@@ -299,6 +301,7 @@ function colourMaterial(tone, base) {
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 let selected = null;
+const marked = new Set();     // elements of the take-off row clicked last, highlighted like a selection
 
 function rayFrom(ev) {
   const r = renderer.domElement.getBoundingClientRect();
@@ -358,6 +361,7 @@ function surfaceAt(ev) {
 
 /** Selects an element (or nothing). point, normal: where it was clicked, for the Hide / Isolate / Cut bar. */
 function select(obj, point = null, normal = null) {
+  if (obj !== selected) clearMarks();
   if (selected === obj) {
     if (obj && point) showPick(byObject.get(obj), point, normal);
     return;
@@ -461,7 +465,7 @@ window.addEventListener('keydown', (ev) => {
   if (k === 'Escape') {
     if (!pickMenu.hidden) closePickMenu(true);
     else if (measureMode()) escapeMeasuring();
-    else select(null);
+    else { clearMarks(); select(null); }
   }
   if (k === 'f' && model) fit(selected ?? model);
 });
@@ -700,6 +704,7 @@ function applyVisibility() {
   renderList();
   renderVisibility();
   syncLegend();
+  renderQtoSoon();
   if (explode.f > 0) updateExplode();
 }
 
@@ -796,6 +801,7 @@ function freeArea() {
     const p = panel.getBoundingClientRect();
     if (p.left > W * 0.3) a.r = p.left - g; else a.b = p.top - g;
   }
+  if (!qtoEl.hidden) a.b = Math.min(a.b, qtoEl.getBoundingClientRect().top - g);
   return a;
 }
 
@@ -1037,7 +1043,10 @@ function setupFilter() {
 
 // ---------- tools ----------
 // opening the Measure panel starts measuring; closing it stops
-const PANEL_HOOKS = { measure: (open) => (open ? startMeasuring() : stopMeasuring()) };
+const PANEL_HOOKS = {
+  measure: (open) => (open ? startMeasuring() : stopMeasuring()),
+  qto: (open) => qtoOpened(open),
+};
 function setPanel(button, section, open) {
   const was = !section.hidden;
   section.hidden = !open;
@@ -1454,16 +1463,337 @@ function filterOnValue(field, value) {
   applyFilter();
 }
 
-function downloadGlb() {
-  const name = `${docInfo.document ?? 'model'}_${docInfo.view ?? 'view'}`.replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_');
-  const url = URL.createObjectURL(new Blob([glbBytes], { type: 'model/gltf-binary' }));
+// ---------- quantity take-off: a table along the bottom ----------
+// Rows group the elements by parameters (Category, Type ...); columns total number
+// parameters (the exporter's exact values) or show text; formula columns calculate from
+// other parameters. It counts the elements shown now (filter, hide and isolate apply), or all.
+const qtoEl = $('#qto');
+const QTO_ROW_LIMIT = 1000;
+const AGG_LABEL = Object.fromEntries(AGGREGATES.map((a) => [a.id, a.label]));
+const qto = {
+  spec: { groupBy: ['Category', 'Type'], columns: [], itemize: false, sort: null },
+  scope: 'visible',          // visible | all
+  height: null,              // px, after the reader resized the table
+  table: null, items: [],    // the table shown and the elements it counts (members index items)
+  markedKey: null,           // the row whose elements are highlighted
+};
+const QTO_ACTS =
+  `<button type="button" data-a="isolate" title="Isolate these elements" aria-label="Isolate these elements">${ICONS.isolate}</button>` +
+  `<button type="button" data-a="hide" title="Hide these elements" aria-label="Hide these elements">${ICONS.hide}</button>`;
+
+// remembered per model in this browser (columns, grouping, height)
+const qtoStore = () => `rte-qto:${docInfo.document ?? ''}`;
+function saveQto() {
+  try { localStorage.setItem(qtoStore(), JSON.stringify({ spec: qto.spec, scope: qto.scope, height: qto.height })); } catch { /* not remembered */ }
+}
+function loadQto() {
+  try {
+    const s = JSON.parse(localStorage.getItem(qtoStore()) ?? 'null');
+    if (!s?.spec || !Array.isArray(s.spec.groupBy) || !Array.isArray(s.spec.columns)) return false;
+    qto.spec = { groupBy: s.spec.groupBy.map(String), columns: s.spec.columns.filter((c) => c && c.name), itemize: !!s.spec.itemize, sort: s.spec.sort ?? null };
+    qto.scope = s.scope === 'all' ? 'all' : 'visible';
+    qto.height = Number(s.height) || null;
+    return true;
+  } catch { return false; }
+}
+
+const inQto = (e) => qto.scope === 'all' || (e.shown && !e.ghost);
+const rowKey = (r) => `${r.kind}|${JSON.stringify(r.keys)}`;
+function renderQtoSoon() { if (!qtoEl.hidden) renderQto(); }
+
+function qtoCell(v, h) {
+  const cls = [h.numeric ? 'num' : '', v === VARIES ? 'vary' : '', v === NONE && h.kind === 'key' ? 'none' : ''].filter(Boolean).join(' ');
+  return `<td${cls ? ` class="${cls}"` : ''}>${esc(cellText(v, h))}</td>`;
+}
+
+function renderQto() {
+  if (qtoEl.hidden) return;
+  qto.items = elements.filter(inQto);
+  const t = buildQto(qto.items.map((e) => e.d), qto.spec, { resolve: resolveName });
+  qto.table = t;
+  const n = qto.items.length;
+  $('#q-count').textContent = n === elements.length ? `${n} elements` : `${n} of ${elements.length} elements`;
+  renderQtoChips(t);
+  const { by, dir } = qto.spec.sort ?? {};
+  const head = '<thead><tr>' + t.head.map((h) => {
+    const sort = h.key === by ? (dir === -1 ? 'descending' : 'ascending') : 'none';
+    const tip = h.error ? `Formula error: ${h.error}` : h.formula ? `${h.name} = ${h.formula}` : h.agg ? `${AGG_LABEL[h.agg]} of ${h.name}` : `Sort by ${h.label}`;
+    return `<th scope="col" data-key="${h.key}" aria-sort="${sort}"${h.numeric ? ' class="num"' : ''}>` +
+      `<button type="button" title="${esc(tip)}">${esc(h.label)}</button></th>`;
+  }).join('') + '<th class="q-acts"><span class="sr">Hide or isolate</span></th></tr></thead>';
+  const row = (r, i) => `<tr class="q-${r.kind}${rowKey(r) === qto.markedKey ? ' on' : ''}" data-r="${i}" tabindex="0">` +
+    r.cells.map((v, c) => qtoCell(v, t.head[c])).join('') + `<td class="q-acts">${r.members.length ? QTO_ACTS : ''}</td></tr>`;
+  const body = [], foot = [];
+  t.rows.forEach((r, i) => {
+    if (r.kind === 'total') foot.push(row(r, i));
+    else if (body.length < QTO_ROW_LIMIT) body.push(row(r, i));
+  });
+  const shownRows = t.rows.filter((r) => r.kind !== 'total').length;
+  const more = $('#q-more');
+  more.hidden = shownRows <= QTO_ROW_LIMIT;
+  more.textContent = `The first ${QTO_ROW_LIMIT} of ${shownRows} rows are shown here; the Excel and CSV files have them all.`;
+  $('#q-table').innerHTML = `${head}<tbody>${body.join('')}</tbody><tfoot>${foot.join('')}</tfoot>`;
+}
+
+function renderQtoChips(t) {
+  const x = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+  $('#q-groups').innerHTML = qto.spec.groupBy.map((g, i) =>
+    `<span class="q-chip"><span>${esc(resolveName(g))}</span>` +
+    `<button type="button" data-g="${i}" title="Stop grouping by ${esc(g)}" aria-label="Stop grouping by ${esc(g)}">${x}</button></span>`).join('');
+  $('#q-cols').innerHTML = qto.spec.columns.map((c, i) => {
+    const h = t.head.find((k) => k.key === `c${i}`);
+    const name = c.formula != null
+      ? `<button type="button" class="link" data-edit="${i}" title="${esc(`${c.name} = ${c.formula}`)} (click to change)">${esc(c.name)} =</button>`
+      : `<span>${esc(resolveName(c.name))}</span>`;
+    const note = h?.error ? `<span class="q-warn" title="${esc(h.error)}">formula error</span>`
+      : h?.mixedUnits ? '<span class="q-warn" title="The values have different units, so they are not added up">mixed units</span>' : '';
+    const agg = h?.numeric
+      ? `<select data-c="${i}" aria-label="${esc(c.name)}: total as">${AGGREGATES.map((a) =>
+        `<option value="${a.id}"${a.id === (c.agg ?? 'sum') ? ' selected' : ''}>${a.label}</option>`).join('')}</select>`
+      : '';
+    return `<span class="q-chip">${name}${note}${agg}` +
+      `<button type="button" data-c="${i}" title="Remove this column" aria-label="Remove the column ${esc(c.name)}">${x}</button></span>`;
+  }).join('');
+  $('#q-itemize').checked = !!qto.spec.itemize;
+  for (const b of document.querySelectorAll('#q-scope button')) b.setAttribute('aria-pressed', String(b.dataset.scope === qto.scope));
+}
+
+/** A row clicked: one element is selected; a group is highlighted and zoomed to. Again: off. */
+function showQtoRow(r) {
+  const list = r.members.map((m) => qto.items[m]);
+  if (r.kind === 'item' && list.length === 1) {
+    const e = list[0];
+    if (handHidden(e)) revealElements([e]);
+    select(e.obj);
+    fit(e.obj);
+    return;
+  }
+  const key = rowKey(r);
+  if (qto.markedKey === key) { clearMarks(); return; }
+  select(null);
+  clearMarks();
+  for (const e of list) marked.add(e.i);
+  qto.markedKey = key;
+  for (const e of list) paint(e);
+  markQtoRows();
+  const box = new THREE.Box3();
+  for (const e of list) if (e.shown && !e.ghost) box.union(e.box0.clone().translate(e.offset));
+  if (!box.isEmpty()) fit(box);
+}
+function clearMarks() {
+  if (!marked.size && !qto.markedKey) return;
+  const was = [...marked];
+  marked.clear();
+  qto.markedKey = null;
+  for (const i of was) paint(elements[i]);
+  markQtoRows();
+}
+function markQtoRows() {
+  for (const tr of qtoEl.querySelectorAll('tr[data-r]')) {
+    tr.classList.toggle('on', !!qto.table && rowKey(qto.table.rows[Number(tr.dataset.r)]) === qto.markedKey);
+  }
+}
+
+function qtoOpened(open) {
+  document.body.classList.toggle('qto-open', open);
+  if (open) renderQto();
+  else { clearMarks(); $('#q-fform').hidden = true; }
+}
+
+function setQtoHeight(h) {
+  qto.height = Math.round(Math.max(150, Math.min(innerHeight - 120, h)));
+  qtoEl.style.height = `${qto.height}px`;
+}
+
+/** Lines above the table in the Excel file: what was counted, from which model. */
+function qtoMeta() {
+  const n = qto.items.length;
+  const which = qto.scope === 'all' ? `All ${n} elements in the file`
+    : n === elements.length ? `All ${n} elements` : `${n} of ${elements.length}: the elements shown in the viewer (filter, hide and isolate applied)`;
+  const meta = [
+    ['Model', docInfo.document ?? ''], ['Revit view', docInfo.view ?? ''], ['Exported from Revit', docInfo.exportedAt ?? ''],
+    ['Table made', new Date().toLocaleString()], ['Elements', which],
+    ['Grouped by', qto.spec.groupBy.map(resolveName).join(', ') || '(not grouped)'],
+  ];
+  const formulas = qto.spec.columns.filter((c) => c.formula != null);
+  if (formulas.length) meta.push(['Formulas', formulas.map((c) => `${c.name} = ${c.formula}`).join('; ')]);
+  return meta;
+}
+
+function setupQto() {
+  if (!loadQto()) {
+    const known = (n) => canonicalName.has(n.toLocaleLowerCase());
+    qto.spec.columns = ['Volume', 'Area'].filter(known).map((name) => ({ name: resolveName(name), agg: 'sum' }));
+    if (!qto.spec.columns.length) qto.spec.columns = [{ name: 'Volume (m³)', agg: 'sum' }];
+  }
+  if (qto.height) qtoEl.style.height = `${qto.height}px`;
+  trackHeight(qtoEl, '--qto-h');
+  // grouping and columns: shown on wide screens; on phones the table needs the room
+  const setupBtn = $('#q-setup'), bar = $('#q-bar');
+  const showBar = (open) => { bar.hidden = !open; setupBtn.setAttribute('aria-expanded', String(open)); };
+  showBar(!matchMedia('(max-width: 640px)').matches);
+  setupBtn.addEventListener('click', () => showBar(bar.hidden));
+  const changed = (resetSort = false) => { if (resetSort) qto.spec.sort = null; saveQto(); renderQto(); };
+
+  // add a parameter: picked from the list, or typed and Enter
+  const known = (v) => canonicalName.has(v.trim().toLocaleLowerCase());
+  const adder = (input, add) => {
+    const take = (strict) => {
+      const v = input.value.trim();
+      if (!v) return;
+      if (!known(v)) {
+        if (strict) { input.setCustomValidity('Pick a parameter from the list'); input.reportValidity(); }
+        return;
+      }
+      input.setCustomValidity('');
+      input.value = '';
+      add(resolveName(v));
+      changed(true);
+    };
+    input.addEventListener('input', (ev) => { input.setCustomValidity(''); if (ev.inputType === 'insertReplacementText' || ev.inputType == null) take(false); });
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); take(true); } });
+    input.addEventListener('change', () => take(false));
+  };
+  adder($('#q-group-add'), (n) => { if (!qto.spec.groupBy.includes(n)) qto.spec.groupBy.push(n); });
+  adder($('#q-col-add'), (n) => {
+    if (!qto.spec.columns.some((c) => c.formula == null && c.name === n)) qto.spec.columns.push({ name: n, agg: 'sum' });
+  });
+  $('#q-groups').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-g]');
+    if (!b) return;
+    qto.spec.groupBy.splice(Number(b.dataset.g), 1);
+    changed(true);
+  });
+  $('#q-cols').addEventListener('click', (ev) => {
+    const edit = ev.target.closest('button[data-edit]');
+    if (edit) { openFormula(Number(edit.dataset.edit)); return; }
+    const b = ev.target.closest('button[data-c]');
+    if (!b) return;
+    qto.spec.columns.splice(Number(b.dataset.c), 1);
+    changed(true);
+  });
+  $('#q-cols').addEventListener('change', (ev) => {
+    const sel = ev.target.closest('select[data-c]');
+    if (!sel) return;
+    qto.spec.columns[Number(sel.dataset.c)].agg = sel.value;
+    changed();
+  });
+
+  // formula columns: [Parameter] names, numbers, + - * / ( )
+  const form = $('#q-fform'), fname = $('#q-fname'), fexpr = $('#q-fexpr'), ferr = $('#q-ferr');
+  let editing = -1;
+  function openFormula(i) {
+    editing = i;
+    const c = qto.spec.columns[i];
+    fname.value = c?.name ?? '';
+    fexpr.value = c?.formula ?? '';
+    ferr.textContent = '';
+    form.querySelector('button[type="submit"]').textContent = i >= 0 ? 'Save' : 'Add';
+    form.hidden = false;
+    (i >= 0 ? fexpr : fname).focus();
+  }
+  $('#q-formula').addEventListener('click', () => openFormula(-1));
+  $('#q-fcancel').addEventListener('click', () => { form.hidden = true; });
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const name = fname.value.trim(), formula = fexpr.value.trim();
+    if (!name || !formula) { ferr.textContent = 'Give the column a name and a formula.'; return; }
+    let refs;
+    try { refs = compileFormula(formula).refs; } catch (err) { ferr.textContent = err.message; return; }
+    const unknown = refs.filter((r) => !known(r));
+    if (unknown.length) { ferr.textContent = `Not a parameter in this model: ${unknown.join(', ')}`; return; }
+    const col = { name, formula, agg: qto.spec.columns[editing]?.agg ?? 'sum' };
+    if (editing >= 0) qto.spec.columns[editing] = col; else qto.spec.columns.push(col);
+    form.hidden = true;
+    changed(editing < 0);
+  });
+
+  for (const b of document.querySelectorAll('#q-scope button')) {
+    b.addEventListener('click', () => { qto.scope = b.dataset.scope; changed(); });
+  }
+  $('#q-itemize').addEventListener('change', (ev) => { qto.spec.itemize = ev.target.checked; changed(true); });
+
+  // the table: sort by a header; a row shows its elements; Isolate / Hide at the row's end
+  const table = $('#q-table');
+  table.addEventListener('click', (ev) => {
+    const th = ev.target.closest('thead th[data-key]');
+    if (th) {
+      const h = qto.table.head.find((k) => k.key === th.dataset.key);
+      const s = qto.spec.sort;
+      const first = h.numeric ? -1 : 1;   // biggest quantities first
+      qto.spec.sort = s?.by !== h.key ? { by: h.key, dir: first } : s.dir === first ? { by: h.key, dir: -first } : null;
+      changed();
+      return;
+    }
+    const tr = ev.target.closest('tr[data-r]');
+    if (!tr) return;
+    const r = qto.table.rows[Number(tr.dataset.r)];
+    const act = ev.target.closest('button[data-a]');
+    if (act) {
+      const list = r.members.map((m) => qto.items[m]);
+      if (act.dataset.a === 'hide') hideElements(list); else isolateElements(list);
+      return;
+    }
+    showQtoRow(r);
+  });
+  table.addEventListener('keydown', (ev) => {
+    const tr = ev.target.closest?.('tr[data-r]');
+    if (!tr || ev.target !== tr || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+    ev.preventDefault();
+    showQtoRow(qto.table.rows[Number(tr.dataset.r)]);
+  });
+
+  $('#q-xlsx').addEventListener('click', () => {
+    const sheet = toSheet(qto.table, `Quantities – ${docInfo.document ?? 'model'}`, qtoMeta());
+    saveFile(new Blob([xlsx({ name: 'Quantities', ...sheet })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+      `${fileBase()}_quantities.xlsx`);
+  });
+  $('#q-csv').addEventListener('click', () => {
+    saveFile(new Blob([toCsv(qto.table)], { type: 'text/csv;charset=utf-8' }), `${fileBase()}_quantities.csv`);
+  });
+
+  // drag the top edge (or arrow keys on it) to make the table taller or lower
+  const grip = $('#q-grip');
+  grip.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    grip.setPointerCapture?.(ev.pointerId);
+    const y0 = ev.clientY, h0 = qtoEl.offsetHeight;
+    const move = (e) => setQtoHeight(h0 + (y0 - e.clientY));
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+      saveQto();
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+  });
+  grip.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+    ev.preventDefault();
+    setQtoHeight(qtoEl.offsetHeight + (ev.key === 'ArrowUp' ? 40 : -40));
+    saveQto();
+  });
+  $('#q-close').addEventListener('click', () => togglePanel($('#tb-qto'), qtoEl, false));
+}
+
+/** "<document>_<view>", safe as a file name. */
+const fileBase = () => `${docInfo.document ?? 'model'}_${docInfo.view ?? 'view'}`.replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_');
+
+function saveFile(blob, name) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${name}.glb`;
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+function downloadGlb() {
+  saveFile(new Blob([glbBytes], { type: 'model/gltf-binary' }), `${fileBase()}.glb`);
 }
 
 function setupTools() {
@@ -1473,6 +1803,7 @@ function setupTools() {
   setupPick();
   setupCuts();
   setupMeasure();
+  setupQto();
   for (const b of document.querySelectorAll('#tools .tool[aria-controls]')) {
     const section = document.getElementById(b.getAttribute('aria-controls'));
     b.addEventListener('click', () => togglePanel(b, section));
@@ -1541,6 +1872,12 @@ window.viewer = {
       box: cuts.box ? [cuts.box.box.min.toArray(), cuts.box.box.max.toArray()] : null,
     },
     measure: { active: mState.active, mode: mState.mode, first: !!mState.first },
+  }),
+  /** The quantity take-off table as shown: head labels and rows (cells raw: numbers stay numbers). */
+  qto: () => ({
+    open: !qtoEl.hidden, scope: qto.scope, spec: JSON.parse(JSON.stringify(qto.spec)), marked: marked.size,
+    head: qto.table?.head.map((h) => h.label) ?? [],
+    rows: qto.table?.rows.map((r) => ({ kind: r.kind, n: r.members.length, cells: r.cells.map((v) => (v === VARIES ? 'varies' : v)) })) ?? [],
   }),
   /** Measurements in Revit metres. */
   measures: () => (measure ? measure.items.map((i) => ({

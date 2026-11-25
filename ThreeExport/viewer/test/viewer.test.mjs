@@ -881,6 +881,246 @@ test('panels do not overlap the inspect panel (desktop and phone)', async () => 
   }
 });
 
+// ---------- quantity take-off ----------
+const qtoOf = (page) => page.evaluate(() => window.viewer.qto());
+const closeTo = (a, b, msg) => assert.ok(Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b)), `${msg}: ${a} vs ${b}`);
+const exact = (d, name) => d.paramNumbers?.[name] ?? d.typeParamNumbers?.[name];
+const sumOf = (ds, name) => Number(ds.reduce((s, d) => s + (exact(d, name) ?? 0), 0).toPrecision(12));
+
+/** Files of a zip with stored entries: name -> text. */
+function unzip(bytes) {
+  const out = {};
+  for (let at = 0; bytes.readUInt32LE(at) === 0x04034b50;) {
+    const size = bytes.readUInt32LE(at + 18), n = bytes.readUInt16LE(at + 26);
+    out[bytes.subarray(at + 30, at + 30 + n).toString('utf8')] = bytes.subarray(at + 30 + n, at + 30 + n + size).toString('utf8');
+    at += 30 + n + size;
+  }
+  return out;
+}
+
+test('Quantities: exact totals by category and type; follows the filter; columns, grouping and sorting', async () => {
+  const { page, errors } = await open();
+  await page.click('#tb-qto');
+  await page.waitForSelector('#qto:not([hidden])');
+  let q = await qtoOf(page);
+  assert.deepEqual(q.head, ['Category', 'Type', 'Count', 'Volume (m³)', 'Area (m²)']);
+  const total = q.rows.at(-1);
+  assert.equal(total.kind, 'total');
+  assert.equal(total.n, data.length);
+  closeTo(total.cells[3], sumOf(data, 'Volume'), 'volume total');
+  closeTo(total.cells[4], sumOf(data, 'Area'), 'area total');
+  // the rounded text ("1 m²" for 0.96 m²) would add up to something else
+  const textSum = data.reduce((s, d) => s + parseFloat(d.params.Area), 0);
+  assert.ok(Math.abs(textSum - total.cells[4]) > 1, `exact ${total.cells[4]}, text ${textSum}`);
+  // every group row: its elements and their exact sums
+  for (const r of q.rows.filter((x) => x.kind === 'group')) {
+    const ds = data.filter((d) => d.category === r.cells[0] && d.type === r.cells[1]);
+    assert.equal(r.n, ds.length, `${r.cells[0]} / ${r.cells[1]}`);
+    closeTo(r.cells[3], sumOf(ds, 'Volume'), `${r.cells[1]} volume`);
+  }
+  const gm = q.rows.find((x) => x.kind === 'subtotal' && x.cells[0] === 'Generic Models');
+  assert.equal(gm.n, data.filter((d) => d.category === 'Generic Models').length, 'subtotal of a category with two types');
+  assert.match(await page.textContent('#q-table tfoot'), /Total/);
+
+  // the filter narrows what is counted; All counts everything
+  await page.click('#tb-filter');
+  await setRule(page, 'Category', 'eq', 'Walls');
+  const walls = data.filter((d) => d.category === 'Walls');
+  q = await qtoOf(page);
+  assert.equal(q.rows.at(-1).n, walls.length);
+  assert.match(await page.textContent('#q-count'), new RegExp(`^${walls.length} of ${data.length} elements`));
+  await page.click('#q-scope [data-scope="all"]');
+  assert.equal((await qtoOf(page)).rows.at(-1).n, data.length);
+  await page.click('#q-scope [data-scope="visible"]');
+  await page.click('#f-clear');
+  assert.equal((await qtoOf(page)).rows.at(-1).n, data.length);
+
+  // a type parameter column (exact values); unknown names are refused
+  await page.fill('#q-col-add', 'width');
+  await page.press('#q-col-add', 'Enter');
+  q = await qtoOf(page);
+  assert.deepEqual(q.head.slice(2), ['Count', 'Volume (m³)', 'Area (m²)', 'Width']);
+  closeTo(q.rows.at(-1).cells[5], sumOf(data, 'Width'), 'width total');
+  await page.fill('#q-col-add', 'No such parameter');
+  await page.press('#q-col-add', 'Enter');
+  assert.equal((await qtoOf(page)).head.length, 6);
+  assert.equal(await page.$eval('#q-col-add', (i) => i.validity.valid), false);
+  await page.fill('#q-col-add', '');
+  // Sum -> Max
+  await page.selectOption('#q-cols select[data-c="2"]', 'max');
+  closeTo((await qtoOf(page)).rows.at(-1).cells[5], Math.max(...data.map((d) => exact(d, 'Width'))), 'width max');
+  await page.click('#q-cols button[data-c="2"]');
+  assert.deepEqual((await qtoOf(page)).head.slice(3), ['Volume (m³)', 'Area (m²)']);
+
+  // group by Level too, then by Category alone
+  await page.fill('#q-group-add', 'Level');
+  await page.press('#q-group-add', 'Enter');
+  assert.deepEqual((await qtoOf(page)).head.slice(0, 3), ['Category', 'Type', 'Level']);
+  await page.click('#q-groups button[data-g="2"]');
+  await page.click('#q-groups button[data-g="1"]');
+  q = await qtoOf(page);
+  assert.deepEqual(q.head, ['Category', 'Count', 'Volume (m³)', 'Area (m²)']);
+  assert.deepEqual(q.rows.filter((r) => r.kind === 'group').map((r) => r.cells[0]),
+    [...new Set(data.map((d) => d.category))].sort((a, b) => a.localeCompare(b)));
+
+  // sort: biggest volume first, then smallest first, then back to names
+  const volumes = async () => (await qtoOf(page)).rows.filter((r) => r.kind === 'group').map((r) => r.cells[2]);
+  await page.click('#q-table th[data-key="c0"] button');
+  assert.equal(await page.getAttribute('#q-table th[data-key="c0"]', 'aria-sort'), 'descending');
+  let v = await volumes();
+  assert.deepEqual(v, [...v].sort((a, b) => b - a));
+  await page.click('#q-table th[data-key="c0"] button');
+  v = await volumes();
+  assert.deepEqual(v, [...v].sort((a, b) => a - b));
+  await page.click('#q-table th[data-key="c0"] button');
+  assert.equal(await page.getAttribute('#q-table th[data-key="c0"]', 'aria-sort'), 'none');
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('Quantities: rows show, isolate and hide their elements; one row per element selects it', async () => {
+  const { page, errors } = await open();
+  await page.click('#tb-qto');
+  const walls = data.filter((d) => d.category === 'Walls');
+  const wallRow = page.locator('#q-table tbody tr', { hasText: 'Obloga od Kulira' });
+  // a row highlights its elements and zooms to them; again, or Esc, turns that off
+  await wallRow.click();
+  assert.equal((await qtoOf(page)).marked, 1);
+  assert.equal(await wallRow.getAttribute('class'), 'q-group on');
+  await page.keyboard.press('Escape');
+  assert.equal((await qtoOf(page)).marked, 0);
+  const subtotal = page.locator('#q-table tbody tr.q-subtotal', { hasText: 'Walls' });
+  await subtotal.click();
+  assert.equal((await qtoOf(page)).marked, walls.length);
+  await subtotal.click();
+  assert.equal((await qtoOf(page)).marked, 0);
+
+  // Isolate from the row: only those elements show, and the table counts them alone
+  await subtotal.hover();
+  await subtotal.locator('button[data-a="isolate"]').click();
+  assert.equal((await state(page)).isolated, walls.length);
+  assert.equal(await shownCount(page), walls.length);
+  assert.equal((await qtoOf(page)).rows.at(-1).n, walls.length);
+  await page.click('#vis-all');
+  // Hide from the row
+  const floors = page.locator('#q-table tbody tr', { hasText: 'Ploča 30 cm' });
+  await floors.hover();
+  await floors.locator('button[data-a="hide"]').click();
+  const nFloors = data.filter((d) => d.category === 'Floors').length;
+  assert.equal(await shownCount(page), data.length - nFloors);
+  await page.click('#vis-all');
+
+  // one row per element: Element ID column; a row selects its element
+  await page.check('#q-itemize');
+  const q = await qtoOf(page);
+  assert.deepEqual(q.head.slice(0, 3), ['Category', 'Type', 'Element ID']);
+  assert.equal(q.rows.filter((r) => r.kind === 'item').length, data.length);
+  await page.locator('#q-table tbody tr', { hasText: '843064' }).click();
+  assert.equal((await state(page)).selected, 843064);
+  assert.ok(await page.isVisible('#panel'));
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('Quantities: formula columns; Excel and CSV files; the setup is remembered', async () => {
+  const { page, errors } = await open();
+  await page.click('#tb-qto');
+  await page.click('#q-formula');
+  await page.fill('#q-fname', 'Concrete (kg)');
+  await page.fill('#q-fexpr', '[Nope] * 2');
+  await page.click('#q-fform button[type="submit"]');
+  assert.match(await page.textContent('#q-ferr'), /Not a parameter in this model: Nope/);
+  await page.fill('#q-fexpr', '[Volume] * 2,4 *');
+  await page.click('#q-fform button[type="submit"]');
+  assert.match(await page.textContent('#q-ferr'), /ends too early/);
+  await page.fill('#q-fexpr', '[volume] * 2400');
+  await page.click('#q-fform button[type="submit"]');
+  assert.ok(await page.isHidden('#q-fform'));
+  let q = await qtoOf(page);
+  assert.equal(q.head.at(-1), 'Concrete (kg)');
+  closeTo(q.rows.at(-1).cells.at(-1), sumOf(data, 'Volume') * 2400, 'concrete');
+  // change it from its chip
+  await page.click('#q-cols button[data-edit]');
+  await page.fill('#q-fexpr', '[Volume] * 2500');
+  await page.click('#q-fform button[type="submit"]');
+  q = await qtoOf(page);
+  closeTo(q.rows.at(-1).cells.at(-1), sumOf(data, 'Volume') * 2500, 'concrete, changed');
+  assert.equal(q.head.length, 6);
+
+  // Excel: numbers as numbers, a title block, the formula written down
+  const [xl] = await Promise.all([page.waitForEvent('download'), page.click('#q-xlsx')]);
+  assert.equal(xl.suggestedFilename(), 'Sintetički model_Export_quantities.xlsx');
+  const files = unzip(fs.readFileSync(await xl.path()));
+  const ws = files['xl/worksheets/sheet1.xml'];
+  assert.ok(ws, 'the sheet is in the workbook');
+  assert.match(ws, /<t>Quantities – Sintetički model<\/t>/);
+  assert.match(ws, /<t>Concrete \(kg\) = \[Volume\] \* 2500<\/t>/);
+  assert.ok(ws.includes(`<v>${q.rows.at(-1).cells[3]}</v>`), 'the volume total as a number');
+  assert.ok(ws.includes(`<v>${data.length}</v>`), 'the count');
+  // CSV
+  const [csv] = await Promise.all([page.waitForEvent('download'), page.click('#q-csv')]);
+  assert.equal(csv.suggestedFilename(), 'Sintetički model_Export_quantities.csv');
+  const text = fs.readFileSync(await csv.path(), 'utf8');
+  assert.ok(text.startsWith('﻿'));
+  const lines = text.slice(1).trim().split('\r\n');
+  assert.equal(lines[0], ['Category', 'Type', 'Count', 'Volume (m³)', 'Area (m²)', 'Concrete (kg)'].join(','));
+  assert.equal(lines.length, q.rows.length + 1);
+  assert.match(lines.at(-1), new RegExp(`^Total,,${data.length},`));
+
+  // the columns and grouping are remembered for this model
+  await page.reload();
+  assert.equal(await page.evaluate(() => window.viewer.ready), true);
+  await page.click('#tb-qto');
+  assert.deepEqual((await qtoOf(page)).head, ['Category', 'Type', 'Count', 'Volume (m³)', 'Area (m²)', 'Concrete (kg)']);
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('Quantities: the table fits beside the inspect panel and under the tools; resizable; phones', async () => {
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 800, height: 700 }, { width: 375, height: 812 }]) {
+    const { page } = await open({ viewport });
+    await page.click('#tb-qto');
+    const qbox = () => page.locator('#qto').boundingBox();
+    let box = await qbox();
+    assert.ok(box.x >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height, `${viewport.width}px: on screen`);
+    const tools = await page.locator('#tools').boundingBox();
+    assert.ok(!overlap(tools, box), `${viewport.width}px: the tools overlap the table`);
+    assert.ok(await page.isHidden('#hint'), 'the hint makes room');
+    if (viewport.width > 640) {
+      assert.equal((await page.$eval('#q-bar', (b) => b.hidden)), false, 'grouping and columns shown');
+      await page.click('#tb-filter');
+      assert.ok(!overlap(await page.locator('#filter').boundingBox(), box), `${viewport.width}px: the filter overlaps the table`);
+      // inspect an element (picked from the table: the middle of the view is under the filter at 800 px)
+      await page.check('#q-itemize');
+      await page.locator('#q-table tbody tr.q-item').first().click();
+      await page.waitForSelector('#panel:not([hidden])');
+      box = await qbox();
+      assert.ok(!overlap(await page.locator('#panel').boundingBox(), box), `${viewport.width}px: the table overlaps the inspect panel`);
+      const bar = await page.locator('#pick').boundingBox();
+      assert.ok(!overlap(bar, box), `${viewport.width}px: the Hide / Isolate bar overlaps the table`);
+      // drag the top edge up: taller, and remembered
+      const h0 = box.height;
+      const grip = await page.locator('#q-grip').boundingBox();
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2 - 100, { steps: 4 });
+      await page.mouse.up();
+      const h1 = (await qbox()).height;
+      assert.ok(Math.abs(h1 - (h0 + 100)) <= 2, `resized: ${h0} -> ${h1}`);
+    } else {
+      assert.equal((await page.$eval('#q-bar', (b) => b.hidden)), true, 'phones: the table gets the room');
+      await page.click('#q-setup');
+      assert.equal((await page.$eval('#q-bar', (b) => b.hidden)), false);
+      await page.click('#tb-filter');
+      assert.ok(await page.isHidden('#qto'), 'phones: one tool panel at a time');
+      await page.click('#tb-qto');
+    }
+    const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+    assert.ok(sw <= cw, `${viewport.width}px: scrollWidth ${sw} > clientWidth ${cw}`);
+    await page.close();
+  }
+});
+
 test('phone layout has no horizontal scroll', async () => {
   const { page } = await open({ viewport: { width: 375, height: 812 } });
   const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));

@@ -169,6 +169,8 @@
     body.inspecting #side { bottom: calc(58% + var(--gap) + 10px + env(safe-area-inset-bottom, 0px)); }
   }
   #tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px; align-self: flex-start; max-width: 100%; }
+  /* wide screens: the tool buttons stay on one row (the inspect panel is far enough away) */
+  @media (min-width: 861px) { #tools { width: max-content; max-width: calc(100vw - 2 * var(--gap)); } }
   .tool {
     border: 0; background: none; border-radius: 7px; padding: 6px 10px; font-weight: 600; font-size: 12.5px;
     display: inline-flex; align-items: center; gap: 6px;
@@ -359,6 +361,90 @@
   .mlabel.live { opacity: .85; }
   .msnap { width: 14px; height: 14px; border: 2px solid #eb6834; border-radius: 50%; background: rgba(255, 255, 255, .35); }
   .msnap.corner { border-radius: 2px; border-color: #1f6feb; background: rgba(31, 111, 235, .25); }
+  /* Quantity take-off: a table along the bottom; the tools column and the hint make room */
+  body.qto-open #hint { display: none; }
+  body.qto-open #side { bottom: calc(var(--gap) + env(safe-area-inset-bottom, 0px) + var(--qto-h, 0px) + 10px); }
+  #qto {
+    left: calc(var(--gap) + env(safe-area-inset-left, 0px));
+    right: calc(var(--gap) + env(safe-area-inset-right, 0px));
+    bottom: calc(var(--gap) + env(safe-area-inset-bottom, 0px));
+    height: 36vh; min-height: 150px; max-height: calc(100vh - 120px);
+    display: flex; flex-direction: column; font-size: 12.5px;
+  }
+  @media (min-width: 641px) {
+    body.inspecting #qto { right: calc(2 * var(--gap) + min(380px, calc(100vw - 2 * var(--gap))) + env(safe-area-inset-right, 0px)); }
+  }
+  @media (max-width: 640px) {
+    #qto { height: 46%; }
+    body.qto-open.inspecting #side { bottom: calc(58% + var(--gap) + 10px + env(safe-area-inset-bottom, 0px)); }
+  }
+  .q-grip { position: absolute; left: 0; right: 0; top: -6px; height: 14px; cursor: ns-resize; touch-action: none; z-index: 2; }
+  .q-grip::after { content: ""; display: block; width: 44px; height: 4px; border-radius: 2px; background: var(--line); margin: 5px auto 0; }
+  .q-grip:hover::after, .q-grip:focus-visible::after { background: var(--accent); }
+  .q-grip:focus-visible { outline: none; }
+  .q-head { flex-wrap: wrap; row-gap: 6px; }
+  #q-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #q-scope { flex: none; }
+  #q-scope button { flex: none; padding: 4px 10px; }
+  .q-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; cursor: pointer; }
+  .q-check input { accent-color: var(--accent); margin: 0; }
+  .q-gap { margin-right: auto; }
+  #q-setup::after { content: " ▾"; font-size: 10px; }
+  #q-setup[aria-expanded="true"]::after { content: " ▴"; }
+  .q-bar { display: grid; gap: 6px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); }
+  .q-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .q-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; min-width: 74px; }
+  .q-chips { display: contents; }
+  .q-chip {
+    display: inline-flex; align-items: center; gap: 4px; background: var(--well); border-radius: 99px;
+    padding: 2px 4px 2px 10px; font-size: 12px; max-width: 100%;
+  }
+  .q-chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-chip select { font: inherit; font-size: 11.5px; border: 0; background: var(--card); color: var(--ink); border-radius: 99px; padding: 1px 4px; }
+  .q-chip button:not(.link) { border: 0; background: none; width: 20px; height: 20px; border-radius: 50%; padding: 0; display: grid; place-items: center; color: var(--muted); }
+  .q-chip button:not(.link):hover { background: var(--card); color: var(--ink); }
+  .q-chip svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+  .q-chip .link { font-size: 12px; color: var(--ink); }
+  .q-warn { color: #c4361f; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .q-add { width: 170px; padding: 3px 8px; font-size: 12px; }
+  #q-fform .field { width: 190px; padding: 3px 8px; font-size: 12px; }
+  #q-fform #q-fexpr { width: 260px; font-family: var(--font-mono); }
+  .q-err { color: #c4361f; font-size: 12px; }
+  .q-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  #q-table { width: max-content; min-width: 50%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+  #q-table th, #q-table td {
+    width: auto; padding: 4px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+    vertical-align: middle; overflow-wrap: normal; text-align: left;
+  }
+  #q-table th:first-child, #q-table td:first-child { padding-left: 14px; }
+  #q-table thead th { position: sticky; top: 0; z-index: 1; background: var(--card-solid); color: var(--muted); font-weight: 600; }
+  #q-table thead button { border: 0; background: none; padding: 2px 0; font: inherit; color: inherit; white-space: nowrap; }
+  #q-table thead button:hover { color: var(--accent); }
+  #q-table th[aria-sort="ascending"] button::after { content: " ▲"; font-size: 9px; color: var(--accent); }
+  #q-table th[aria-sort="descending"] button::after { content: " ▼"; font-size: 9px; color: var(--accent); }
+  #q-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+  #q-table tbody tr, #q-table tfoot tr { cursor: pointer; }
+  #q-table tbody tr:hover td { background: var(--well); }
+  #q-table tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #q-table tr.q-subtotal td { font-weight: 600; background: var(--well); }
+  #q-table tr.on td, #q-table tr.on:hover td { background: var(--accent-soft); }
+  #q-table tfoot td {
+    position: sticky; bottom: 0; background: var(--card-solid); font-weight: 700;
+    border-top: 2px solid var(--line); border-bottom: 0;
+  }
+  #q-table tfoot tr.on td { background: var(--accent-soft); }
+  #q-table .vary { color: var(--muted); font-style: italic; }
+  #q-table .none { color: var(--muted); }
+  #q-table .q-acts { width: 1%; padding: 0 6px; text-align: right; }
+  .q-acts button {
+    border: 0; background: none; width: 24px; height: 24px; border-radius: 6px; padding: 0;
+    display: inline-grid; place-items: center; color: var(--muted); opacity: .55;
+  }
+  #q-table tr:hover .q-acts button, #q-table tr:focus-within .q-acts button { opacity: 1; }
+  .q-acts button:hover { background: var(--card); color: var(--accent); }
+  .q-acts svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  #q-more { padding: 6px 14px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   @media (prefers-reduced-motion: reduce) { #status .bar i { transition: none; } }
   [hidden] { display: none !important; }
 </style>
@@ -383,6 +469,7 @@
     <button id="tb-filter" class="tool" type="button" aria-expanded="false" aria-controls="filter">Filter<span id="tb-filter-n" class="badge" hidden></span></button>
     <button id="tb-colour" class="tool" type="button" aria-expanded="false" aria-controls="colour">Colour<span id="tb-colour-dot" class="cdot" hidden></span></button>
     <button id="tb-measure" class="tool" type="button" aria-expanded="false" aria-controls="measure">Measure</button>
+    <button id="tb-qto" class="tool" type="button" aria-expanded="false" aria-controls="qto" title="Quantity take-off: a table of counts and totals">Quantities</button>
     <button id="tb-download" class="tool" type="button" title="Download the 3D model as a .glb file" aria-label="Download .glb"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>.glb</button>
   </div>
   <div id="vis" class="card" role="status" hidden>
@@ -482,6 +569,40 @@
     </div>
   </section>
 </div>
+<section id="qto" class="card" aria-label="Quantity take-off" hidden>
+  <div id="q-grip" class="q-grip" role="separator" aria-orientation="horizontal" aria-label="Drag to make the table taller or lower" tabindex="0"></div>
+  <header class="f-head q-head">
+    <h2>Quantities</h2>
+    <span id="q-count"></span>
+    <div id="q-scope" class="seg" role="group" aria-label="Which elements to count">
+      <button type="button" data-scope="visible" aria-pressed="true" title="The elements shown in the model: filter, hide and isolate apply">Shown</button>
+      <button type="button" data-scope="all" aria-pressed="false" title="Every element in the file">All</button>
+    </div>
+    <label class="q-check" title="One row per element instead of one per group"><input id="q-itemize" type="checkbox">Every element</label>
+    <button id="q-setup" class="ghost" type="button" aria-expanded="true" aria-controls="q-bar" title="Show or hide grouping and columns">Columns</button>
+    <span class="q-gap"></span>
+    <button id="q-xlsx" class="ghost" type="button" title="Download the table as an Excel workbook (.xlsx)">Excel</button>
+    <button id="q-csv" class="ghost" type="button" title="Download the table as a CSV file">CSV</button>
+    <button id="q-close" class="icon" type="button" title="Close" aria-label="Close quantities">×</button>
+  </header>
+  <div id="q-bar" class="q-bar">
+    <div class="q-line"><span class="q-lbl">Group by</span><span id="q-groups" class="q-chips"></span>
+      <input id="q-group-add" class="field q-add" list="f-names" placeholder="+ Group by parameter" aria-label="Group by a parameter" autocomplete="off"></div>
+    <div class="q-line"><span class="q-lbl">Columns</span><span id="q-cols" class="q-chips"></span>
+      <input id="q-col-add" class="field q-add" list="f-names" placeholder="+ Add parameter" aria-label="Add a parameter column" autocomplete="off">
+      <button id="q-formula" class="ghost" type="button" title="A column calculated from other parameters, e.g. [Volume] * 2400">+ Formula</button></div>
+    <form id="q-fform" class="q-line" hidden>
+      <span class="q-lbl">Formula</span>
+      <input id="q-fname" class="field" placeholder="Name, e.g. Concrete (kg)" aria-label="Name of the formula column" autocomplete="off">
+      <input id="q-fexpr" class="field" placeholder="[Volume] * 2400" aria-label="Formula: [Parameter] names, numbers and + - * / ( )" autocomplete="off">
+      <button class="ghost" type="submit">Add</button>
+      <button id="q-fcancel" class="ghost" type="button">Cancel</button>
+      <span id="q-ferr" class="q-err" role="alert"></span>
+    </form>
+  </div>
+  <div class="q-wrap"><table id="q-table"></table></div>
+  <p id="q-more" class="note" hidden></p>
+</section>
 <div id="pick-dot" hidden></div>
 <div id="pick" class="card" role="toolbar" aria-label="Selected element" hidden>
   <div class="pk-act">
