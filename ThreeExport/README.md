@@ -40,6 +40,7 @@ Colours come from the materials, not from view overrides.
 | **Explode** | From centre, Vertical or By category, 0–100 %, **Reset** |
 | **Filter** | search, Category/Family/Type/Level/Material checkboxes, rules (equals, contains, >, ≥, has value …, combined with all/any), **Isolate / Ghost / Hide matching**, a list of the matching elements |
 | **Colour** | colour by any parameter, with a legend: each value, or a number range. Untick a legend row to hide those elements |
+| **Quantities** | a take-off table along the bottom: elements grouped by any parameters (Category and Type to start), a **Count** and the totals of any parameters (**Sum**, Average, Min or Max), **+ Formula** columns such as `[Volume] * 2400`, **Every element** for one row per element. Counts the elements **Shown** (filter, hide and isolate apply) or **All**. Click a header to sort, a row to highlight and zoom to its elements, the row's buttons to isolate or hide them. **Excel** (.xlsx) and **CSV** download the table. Drag the top edge to resize |
 | **Copy filtered IDs** | comma-separated IDs for Revit's *Select by ID* (elements of linked models are left out) |
 | **Download .glb** | the 3D model as glTF binary, for Blender and other tools |
 
@@ -49,6 +50,18 @@ Numeric rules read the number at the start of a value, so `Volume > 8` matches
 **Filter on value** adds the rule *parameter equals value*; a second value of the same
 parameter replaces the first instead of matching nothing. Hide and isolate work on top of
 the filter: an element shows when the filter shows it and it is not hidden by hand.
+
+**Quantities** add up the exact values the exporter writes next to Revit's text (the text is
+rounded: Area "86 m²" may be 86.37), so totals match Revit's schedules; files exported before
+this change add up the text. A column of numbers shows the unit and the decimals of the
+text, and at least two decimals when the text is rounded to whole numbers; values with
+different units in one column are not added up. Text columns show the value when a group
+has one, else *varies*. Formula columns use `[Parameter]` names (any case), numbers,
+`+ - * /` and brackets; an element without one of the values is left out of that total.
+The Excel file has the model, view, date and which elements were counted above the table,
+and keeps numbers as numbers; the CSV uses `;` and decimal commas where the computer's
+region writes decimals with a comma, so Excel opens it in columns. The columns and grouping
+are remembered for each model in that browser.
 
 Measurements are in metres, between the points as built: measuring an exploded model gives
 the same numbers as before exploding. Positions use the project's shared (survey) coordinates when it has
@@ -86,20 +99,27 @@ RevitAPI.dll is never shipped: it comes from the reference-only
 - `viewer/test/logic.test.mjs`: filter operators, number parsing, explode offsets, colour
   schemes (values, Other, ranges, codes), cut and measure geometry (handle drag, clipping
   side, Revit axes).
+- `viewer/test/qto.test.mjs`: quantity take-off (exact values before rounded text, units and
+  decimals, grouping, subtotals, Sum/Average/Min/Max, sorting, one row per element, formulas
+  and their errors), CSV for comma and point regions, and the .xlsx zip (CRCs, parts, cells).
 - `viewer/test/viewer.test.mjs` (Playwright, headless Chromium, `file://`): loading, picking,
   explode and exact Reset, every operator, Isolate/Ghost/Hide, search, facets, the list,
   Copy IDs, Download .glb, hide/isolate from the bar and the keys, property row actions,
   colour by (theme change included), cuts (picking through them, dragging the arrows),
-  measuring (corner snapping, exploded model, laser hits on element faces), and the layout
-  on desktop and phone.
+  measuring (corner snapping, exploded model, laser hits on element faces), quantities (exact
+  totals, the filter, columns, grouping, sorting, rows that isolate or hide, formulas, the
+  Excel and CSV downloads, remembered setup, resizing), and the layout on desktop and phone.
 
 ## File format
 
 The .glb inside the page (gzip + base64 in `<script id="model-glb" data-encoding="gzip-base64">`)
 uses the prototype's layout: a root node with the export info in `extras`, one node per category,
 and one node per element. Each element has its metadata in `extras` (`id, uniqueId, category,
-family, type, level, mark, comments, volume_m3, materials, params, typeParams`, plus `link` and
-`linkInstanceId` for linked elements). Coordinates are metres, Y up, recentred:
+family, type, level, mark, comments, volume_m3, materials, params, typeParams, paramNumbers,
+typeParamNumbers`, plus `link` and `linkInstanceId` for linked elements). `params` and
+`typeParams` hold Revit's display text; `paramNumbers` and `typeParamNumbers` hold the exact
+value of each number parameter, in the unit of its text (`"Area": "86 m²"` next to
+`"Area": 86.3712`), rounded to 10 significant digits. Coordinates are metres, Y up, recentred:
 `revit_m = (x + o.x, −z + o.y, y + o.z)` with `o = revitOffsetMetres`. When the project has
 shared coordinates, the root `extras` also hold `sharedCoordinates` (`location`, `origin`,
 `basisX`, `basisY`, `basisZ`): `shared = origin + revit_m.x·basisX + revit_m.y·basisY + revit_m.z·basisZ`.
