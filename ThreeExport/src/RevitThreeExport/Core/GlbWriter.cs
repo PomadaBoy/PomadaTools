@@ -61,14 +61,18 @@ namespace RevitThreeExport.Core
                 foreach (var p in e.Primitives)
                 {
                     var a = p.Positions.Items;
-                    for (var i = 0; i < p.Positions.Count; i++)
+                    for (var i = 0; i + 2 < p.Positions.Count; i += 3)
                     {
-                        var v = a[i];
-                        if (float.IsNaN(v) || float.IsInfinity(v))
+                        if (!IsFinite(a[i]) || !IsFinite(a[i + 1]) || !IsFinite(a[i + 2]))
                             throw new InvalidDataException("non-finite vertex in " + e.NodeName);
-                        var k = i % 3;
-                        if (v < min[k]) min[k] = v;
-                        if (v > max[k]) max[k] = v;
+                        double x = a[i], y = a[i + 1], z = a[i + 2];
+                        if (e.Origin != null) Place(e, ref x, ref y, ref z);
+                        if (x < min[0]) min[0] = x;
+                        if (x > max[0]) max[0] = x;
+                        if (y < min[1]) min[1] = y;
+                        if (y > max[1]) max[1] = y;
+                        if (z < min[2]) min[2] = z;
+                        if (z > max[2]) max[2] = z;
                     }
                 }
             if (double.IsInfinity(min[0])) { min = new double[3]; max = new double[3]; }
@@ -77,17 +81,20 @@ namespace RevitThreeExport.Core
             {
                 ctr[k] = (min[k] + max[k]) / 2;
                 stats.SizeMetres[k] = max[k] - min[k];
-                stats.OffsetMetres[k] = Math.Round(scene.Origin[k] + ctr[k], 4);
+                stats.OffsetMetres[k] = scene.Origin[k] + ctr[k];   // not rounded: absolute coordinates stay exact
             }
 
-            // ---- Revit (x, y, z) -> glTF (x, z, -y), recentred; a rotation, so winding is kept ----
+            // ---- Revit (x, y, z) -> glTF (x, z, -y), recentred; a rotation, so winding is kept.
+            //      Elements with their own origin keep their positions relative to it: their
+            //      node is moved instead. ----
             foreach (var e in elements)
                 foreach (var p in e.Primitives)
                 {
                     var a = p.Positions.Items;
+                    var c = e.Origin != null ? new double[3] : ctr;
                     for (var i = 0; i + 2 < p.Positions.Count; i += 3)
                     {
-                        double x = a[i] - ctr[0], y = a[i + 1] - ctr[1], z = a[i + 2] - ctr[2];
+                        double x = a[i] - c[0], y = a[i + 1] - c[1], z = a[i + 2] - c[2];
                         a[i] = (float)x;
                         a[i + 1] = (float)z;
                         a[i + 2] = (float)(-y);
@@ -176,6 +183,8 @@ namespace RevitThreeExport.Core
             nodes.Add(new JsonObject { { "name", scene.Name }, { "children", rootChildren }, { "extras", rootExtras } });
 
             var categoryChildren = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+            // meshes of elements with their own origin, by content: identical ones are shared
+            var shared = new Dictionary<ulong, List<(GlbElement Element, int Mesh)>>();
             foreach (var e in elements)
             {
                 var category = e.Category ?? "";
@@ -191,6 +200,28 @@ namespace RevitThreeExport.Core
                 }
                 stats.PerCategory[category] = (stats.PerCategory.TryGetValue(category, out var c) ? c : 0) + 1;
 
+                // the same geometry as an element written before: point to its mesh
+                ulong hash = 0;
+                var meshIndex = -1;
+                if (e.Origin != null)
+                {
+                    hash = ContentHash(e);
+                    if (shared.TryGetValue(hash, out var same))
+                        foreach (var s in same)
+                            if (SameGeometry(s.Element, e)) { meshIndex = s.Mesh; break; }
+                }
+                if (meshIndex >= 0)
+                {
+                    stats.SharedElements++;
+                    foreach (var p in e.Primitives)
+                    {
+                        if (p.TriangleCount == 0) continue;
+                        stats.Vertices += p.VertexCount;
+                        stats.Triangles += p.TriangleCount;
+                    }
+                }
+                else
+                {
                 var primitives = new List<JsonObject>();
                 foreach (var p in e.Primitives)
                 {
@@ -233,7 +264,23 @@ namespace RevitThreeExport.Core
                     stats.Triangles += p.TriangleCount;
                 }
                 meshes.Add(new JsonObject { { "name", e.MeshName }, { "primitives", primitives } });
-                nodes.Add(new JsonObject { { "name", e.NodeName }, { "mesh", meshes.Count - 1 }, { "extras", e.Extras } });
+                meshIndex = meshes.Count - 1;
+                if (e.Origin != null)
+                {
+                    if (!shared.TryGetValue(hash, out var list)) shared[hash] = list = new List<(GlbElement, int)>();
+                    list.Add((e, meshIndex));
+                }
+                }
+                var node = new JsonObject { { "name", e.NodeName }, { "mesh", meshIndex } };
+                if (e.Origin != null)
+                {
+                    // where the element's origin is, in glTF axes, relative to the recentred model
+                    double tx = e.Origin[0] - ctr[0], ty = e.Origin[1] - ctr[1], tz = e.Origin[2] - ctr[2];
+                    if (e.Basis == null) node["translation"] = new[] { tx, tz, -ty };
+                    else node["matrix"] = NodeMatrix(e.Basis, tx, ty, tz);
+                }
+                node["extras"] = e.Extras;
+                nodes.Add(node);
                 children.Add(nodes.Count - 1);
             }
 
@@ -285,6 +332,7 @@ namespace RevitThreeExport.Core
             }
 
             stats.Elements = elements.Count;
+            stats.Meshes = meshes.Count;
             stats.Materials = materials.Count;
             stats.Bytes = total;
             return stats;
@@ -320,6 +368,95 @@ namespace RevitThreeExport.Core
                 output.Write(scratch, 0, n);
                 done += n;
             }
+        }
+
+        private static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+
+        /// <summary>A position of an element with its own origin, in the model's Revit axes.</summary>
+        private static void Place(GlbElement e, ref double x, ref double y, ref double z)
+        {
+            var o = e.Origin;
+            var b = e.Basis;
+            if (b != null)
+            {
+                double px = b[0] * x + b[3] * y + b[6] * z;
+                double py = b[1] * x + b[4] * y + b[7] * z;
+                double pz = b[2] * x + b[5] * y + b[8] * z;
+                x = px; y = py; z = pz;
+            }
+            x += o[0]; y += o[1]; z += o[2];
+        }
+
+        /// <summary>
+        /// The glTF node matrix (column-major) of an element turned by basis and moved by t,
+        /// both in Revit axes: C R C^T, with C turning Revit (x, y, z) into glTF (x, z, -y).
+        /// </summary>
+        private static double[] NodeMatrix(double[] basis, double tx, double ty, double tz)
+        {
+            // R[r, c] = basis[c * 3 + r]. glTF row/column i is Revit axis axis[i] with sign[i]:
+            // x -> x, y (glTF up) <- Revit z, z <- -Revit y
+            int[] axis = { 0, 2, 1 };
+            double[] sign = { 1, 1, -1 };
+            var m = new double[16];
+            for (var r = 0; r < 3; r++)
+                for (var c = 0; c < 3; c++)
+                    m[c * 4 + r] = sign[r] * sign[c] * basis[axis[c] * 3 + axis[r]];
+            m[12] = tx; m[13] = tz; m[14] = -ty; m[15] = 1;
+            return m;
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+        private struct FloatBits
+        {
+            [System.Runtime.InteropServices.FieldOffset(0)] public float F;
+            [System.Runtime.InteropServices.FieldOffset(0)] public uint U;
+        }
+
+        private static ulong Mix(ulong h, uint v)
+        {
+            unchecked
+            {
+                h ^= v;
+                h *= 0x100000001B3UL;
+                return h ^ (h >> 29);
+            }
+        }
+
+        /// <summary>A hash of an element's primitives (materials, positions, normals, indices).</summary>
+        private static ulong ContentHash(GlbElement e)
+        {
+            var h = 0xCBF29CE484222325UL;
+            var bits = new FloatBits();
+            foreach (var p in e.Primitives)
+            {
+                h = Mix(h, (uint)p.Material);
+                h = Mix(h, (uint)p.Positions.Count);
+                h = Mix(h, (uint)p.Indices.Count);
+                for (var i = 0; i < p.Positions.Count; i++) { bits.F = p.Positions.Items[i]; h = Mix(h, bits.U); }
+                for (var i = 0; i < p.Normals.Count; i++) { bits.F = p.Normals.Items[i]; h = Mix(h, bits.U); }
+                for (var i = 0; i < p.Indices.Count; i++) h = Mix(h, (uint)p.Indices.Items[i]);
+            }
+            return h;
+        }
+
+        private static bool SameGeometry(GlbElement a, GlbElement b)
+        {
+            if (a.Primitives.Count != b.Primitives.Count) return false;
+            for (var k = 0; k < a.Primitives.Count; k++)
+            {
+                GlbPrimitive p = a.Primitives[k], q = b.Primitives[k];
+                if (p.Material != q.Material || !Same(p.Positions, q.Positions) || !Same(p.Normals, q.Normals) || !Same(p.Indices, q.Indices))
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool Same<T>(GrowList<T> a, GrowList<T> b) where T : struct, IEquatable<T>
+        {
+            if (a.Count != b.Count) return false;
+            for (var i = 0; i < a.Count; i++)
+                if (!a.Items[i].Equals(b.Items[i])) return false;
+            return true;
         }
 
         private static long Align4(long n) => (n + 3) & ~3L;

@@ -27,6 +27,17 @@ namespace RevitThreeExport
         public int Triangles;
         public bool Kept;
         public readonly GlbElement Glb = new GlbElement();
+
+        /// <summary>
+        /// The element's own coordinate system (feet, host coordinates), set at its first
+        /// geometry: its family instance's placement, or a plain origin at its first point.
+        /// Its geometry is stored relative to it.
+        /// </summary>
+        public Transform FrameT;
+        public Transform FrameInv;
+        /// <summary>Instances open inside this element now, and the first outermost one.</summary>
+        public int InstanceDepth;
+        public Transform OuterInstance;
         public readonly Dictionary<int, GlbPrimitive> ByMaterial = new Dictionary<int, GlbPrimitive>();
 
         private Element _element;
@@ -205,13 +216,59 @@ namespace RevitThreeExport
 
         public RenderNodeAction OnInstanceBegin(InstanceNode node)
         {
-            _transforms.Push(_transforms.Peek().Multiply(node.GetTransform()));
+            var t = _transforms.Peek().Multiply(node.GetTransform());
+            _transforms.Push(t);
+            if (_elements.Count > 0)
+            {
+                var rec = _elements.Peek();
+                rec.InstanceDepth++;
+                if (rec.InstanceDepth == 1 && rec.OuterInstance == null) rec.OuterInstance = t;
+            }
             return RenderNodeAction.Proceed;
         }
 
         public void OnInstanceEnd(InstanceNode node)
         {
             if (_transforms.Count > 1) _transforms.Pop();
+            if (_elements.Count > 0 && _elements.Peek().InstanceDepth > 0) _elements.Peek().InstanceDepth--;
+        }
+
+        /// <summary>
+        /// Sets the element's own frame at its first geometry. A family instance (not mirrored,
+        /// not scaled) keeps its placement: its geometry is then its family's, the same numbers
+        /// for every instance of the type, and the file stores it once. Otherwise a plain origin
+        /// at its first point. Either way the stored positions are small numbers.
+        /// </summary>
+        private void EnsureFrame(ElementRecord rec, Transform t, XYZ first)
+        {
+            if (rec.FrameT != null) return;
+            var inst = rec.InstanceDepth > 0 ? rec.OuterInstance : null;
+            var rotated = false;
+            if (inst != null && Math.Abs(inst.Determinant - 1) < 1e-9)
+            {
+                rec.FrameT = inst;
+                var bx = inst.BasisX; var by = inst.BasisY; var bz = inst.BasisZ;
+                rotated = !(bx.X == 1 && bx.Y == 0 && bx.Z == 0 && by.X == 0 && by.Y == 1 && by.Z == 0 && bz.X == 0 && bz.Y == 0 && bz.Z == 1);
+            }
+            else
+            {
+                rec.FrameT = Transform.CreateTranslation(inst != null ? inst.Origin : t.OfPoint(first));
+            }
+            rec.FrameInv = rec.FrameT.Inverse;
+            var o = rec.FrameT.Origin;
+            if (!HaveOrigin)
+            {
+                HaveOrigin = true;
+                Origin[0] = Math.Round(o.X * Ft);
+                Origin[1] = Math.Round(o.Y * Ft);
+                Origin[2] = Math.Round(o.Z * Ft);
+            }
+            rec.Glb.Origin = new[] { o.X * Ft - Origin[0], o.Y * Ft - Origin[1], o.Z * Ft - Origin[2] };
+            if (rotated)
+            {
+                var b = new[] { rec.FrameT.BasisX, rec.FrameT.BasisY, rec.FrameT.BasisZ };
+                rec.Glb.Basis = new[] { b[0].X, b[0].Y, b[0].Z, b[1].X, b[1].Y, b[1].Z, b[2].X, b[2].Y, b[2].Z };
+            }
         }
 
         public RenderNodeAction OnLinkBegin(LinkNode node)
@@ -342,25 +399,24 @@ namespace RevitThreeExport
 
             var prim = rec.PrimitiveFor(MaterialFor(rec));
             var t = _transforms.Peek();
-            var isIdentity = t.IsIdentity;
-
-            // points -> metres in the host's coordinates
             var pts = mesh.GetPoints();
+            EnsureFrame(rec, t, pts[0]);
+            // from these points to the element's frame: nothing to do for its instance's own
+            // geometry, which then stays exactly as Revit gives it
+            var m = ReferenceEquals(t, rec.FrameT) ? null : rec.FrameInv.Multiply(t);
+            var isIdentity = m == null || m.IsIdentity;
+
+            // points -> metres in the element's frame
             var p = new double[nPoints * 3];
             for (var i = 0; i < nPoints; i++)
             {
-                var q = isIdentity ? pts[i] : t.OfPoint(pts[i]);
+                var q = isIdentity ? pts[i] : m.OfPoint(pts[i]);
                 p[i * 3] = q.X * Ft;
                 p[i * 3 + 1] = q.Y * Ft;
                 p[i * 3 + 2] = q.Z * Ft;
             }
-            if (!HaveOrigin)
-            {
-                HaveOrigin = true;
-                for (var k = 0; k < 3; k++) Origin[k] = Math.Round(p[k]);
-            }
 
-            // normals in the host's axes (rotation only)
+            // normals in the element's axes (rotation only)
             var normals = mesh.NumberOfNormals > 0 ? mesh.GetNormals() : null;
             var dist = mesh.DistributionOfNormals;
             double[] nrm = null;
@@ -369,7 +425,7 @@ namespace RevitThreeExport
                 nrm = new double[normals.Count * 3];
                 for (var i = 0; i < normals.Count; i++)
                 {
-                    var v = isIdentity ? normals[i] : t.OfVector(normals[i]);
+                    var v = isIdentity ? normals[i] : m.OfVector(normals[i]);
                     var l = Math.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
                     if (l <= 0) l = 1;
                     nrm[i * 3] = v.X / l;
@@ -381,7 +437,7 @@ namespace RevitThreeExport
             var facets = mesh.GetFacets();
             var baseVertex = prim.VertexCount;
             var baseIndex = prim.Indices.Count;
-            double ox = Origin[0], oy = Origin[1], oz = Origin[2];
+            const double ox = 0, oy = 0, oz = 0;   // positions are relative to the element's frame
 
             if (nrm != null && dist == DistributionOfNormals.OnEachFacet && normals.Count >= nFacets)
             {

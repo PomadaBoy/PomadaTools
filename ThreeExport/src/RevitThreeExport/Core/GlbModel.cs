@@ -79,6 +79,24 @@ namespace RevitThreeExport.Core
         public JsonObject Extras = new JsonObject();
         public readonly List<GlbPrimitive> Primitives = new List<GlbPrimitive>();
 
+        /// <summary>
+        /// The element's own origin, Revit metres relative to <see cref="GlbScene.Origin"/>
+        /// (Revit axes). When set, the primitives' positions are relative to it (and turned by
+        /// <see cref="Basis"/>): small numbers, so float32 keeps sub-micrometre precision however
+        /// far the element is from the model's origin. The node gets the origin as its
+        /// translation, and elements with identical geometry share one glTF mesh.
+        /// Null: positions are relative to GlbScene.Origin (the older layout).
+        /// </summary>
+        public double[] Origin;
+
+        /// <summary>
+        /// With <see cref="Origin"/>: the element's axes in Revit axes, BasisX then BasisY then
+        /// BasisZ (9 numbers): Revit point = Origin + x·BasisX + y·BasisY + z·BasisZ. Set for a
+        /// turned family instance, whose positions are then its family's own geometry (the
+        /// same for every instance of the type). Null: not turned.
+        /// </summary>
+        public double[] Basis;
+
         public int TriangleCount
         {
             get
@@ -110,8 +128,12 @@ namespace RevitThreeExport.Core
     public sealed class GlbStats
     {
         public int Elements;
+        /// <summary>Triangles and vertices of all elements (an element sharing a mesh counts it again).</summary>
         public int Triangles;
         public int Vertices;
+        /// <summary>glTF meshes written, and elements that reuse another element's mesh.</summary>
+        public int Meshes;
+        public int SharedElements;
         public int Materials;
         public long Bytes;
         /// <summary>Model size in metres along Revit X, Y, Z.</summary>

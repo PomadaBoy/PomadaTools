@@ -10,10 +10,12 @@ namespace RevitThreeExport
     /// <summary>
     /// Element metadata in the prototype's format (revit_export.py: pval, params_of,
     /// type_names). Keys: id, uniqueId, category, family, type, level, mark, comments,
-    /// volume_m3, materials, params, typeParams, and link / linkInstanceId for elements
-    /// from linked models. paramNumbers / typeParamNumbers: the unrounded value of each
-    /// number parameter, in the unit its display text uses (params has "86 m²", paramNumbers
-    /// 86.3712), so quantity totals match Revit's schedules.
+    /// volume_m3, materials, params, paramNumbers, typeRef, and link / linkInstanceId for
+    /// elements from linked models. paramNumbers: the unrounded value of each number
+    /// parameter, in the unit its display text uses (params has "86 m²", paramNumbers
+    /// 86.3712), so quantity totals match Revit's schedules. typeRef names the element's type
+    /// in <see cref="Types"/> (the root node's "types"), which holds each type's parameters
+    /// once: { params, numbers }.
     /// </summary>
     internal sealed class MetadataCollector
     {
@@ -25,6 +27,8 @@ namespace RevitThreeExport
         private readonly Options _hostOptions;
         private readonly Options _linkOptions;
         private readonly Dictionary<string, JsonObject[]> _typeCache = new Dictionary<string, JsonObject[]>();
+        /// <summary>Types the elements refer to, by typeRef: { params, numbers }.</summary>
+        private readonly JsonObject _types = new JsonObject();
         private readonly Dictionary<string, string[]> _typeNames = new Dictionary<string, string[]>();
         private readonly Dictionary<long, bool> _styleHidden = new Dictionary<long, bool>();
 
@@ -53,7 +57,7 @@ namespace RevitThreeExport
             var names = TypeNames(doc, e);
             var numbers = new JsonObject();
             var ps = ParamsOf(doc, e, numbers);
-            var type = _typeParams ? TypeParams(doc, e) : new[] { new JsonObject(), new JsonObject() };
+            var typeRef = _typeParams ? TypeRef(rec) : null;
             var o = new JsonObject
             {
                 { "id", rec.IdValue },
@@ -72,10 +76,9 @@ namespace RevitThreeExport
                         .Select(m => m.Name ?? "Default").ToList()
                 },
                 { "params", ps },
-                { "typeParams", type[0] },
                 { "paramNumbers", numbers },
-                { "typeParamNumbers", type[1] },
             };
+            if (typeRef != null) o["typeRef"] = typeRef;
             if (rec.Frame.IsLink)
             {
                 o["link"] = rec.Frame.LinkName;
@@ -229,6 +232,29 @@ namespace RevitThreeExport
             if (v == 0) return 0;
             var scale = Math.Pow(10, digits - 1 - (int)Math.Floor(Math.Log10(Math.Abs(v))));
             return scale > 1e15 ? v : Math.Round(v * scale) / scale;
+        }
+
+        /// <summary>The types the collected elements refer to, by typeRef: { params, numbers }.</summary>
+        public JsonObject Types => _types;
+
+        /// <summary>
+        /// The element's type as a key into <see cref="Types"/> (its id; for a linked model's
+        /// element, the link's key and the id), adding the type there the first time.
+        /// </summary>
+        private string TypeRef(ElementRecord rec)
+        {
+            var e = rec.Element;
+            if (e == null) return null;
+            ElementId typeId;
+            try { typeId = e.GetTypeId(); } catch { return null; }
+            if (Ids.Of(typeId) < 0) return null;
+            var key = (rec.Frame.IsLink ? rec.Frame.Key + ":" : "") + Ids.Of(typeId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!_types.ContainsKey(key))
+            {
+                var tp = TypeParams(rec.Frame.Doc, e);
+                _types[key] = new JsonObject { { "params", tp[0] }, { "numbers", tp[1] } };
+            }
+            return key;
         }
 
         /// <summary>The type's parameters: [display text, exact numbers].</summary>

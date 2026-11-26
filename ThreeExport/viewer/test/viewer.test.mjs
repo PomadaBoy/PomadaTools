@@ -1300,7 +1300,7 @@ test('big model: the spatial index is built after loading and gives the same hit
     await page.waitForSelector('#status', { state: 'hidden', timeout: 120000 });
     if (!noBvh) {
       await page.waitForFunction(() => window.viewer.stats().bvh.pending === 0, null, { timeout: 60000 });
-      assert.ok((await page.evaluate(() => window.viewer.stats().bvh.built)) > 100, 'trees built for the rebar sets');
+      assert.ok((await page.evaluate(() => window.viewer.stats().bvh.built)) >= 5, 'trees built (one per shared geometry)');
     }
     // click a grid of points over the hall (columns, beams, purlins, plates and bolts)
     const box = await page.locator('#viewport canvas').boundingBox();
@@ -1365,6 +1365,7 @@ test('big model: a few draw calls; tiny parts are left out while the view moves'
   await page.goto(pathToFileURL(path.join(out, 'stress.html')).href, { timeout: 120000 });
   assert.equal(await page.evaluate(() => window.viewer.ready), true);
   await page.waitForSelector('#status', { state: 'hidden', timeout: 120000 });
+  await page.waitForFunction(() => window.viewer.stats().lod.done, null, { timeout: 120000 });
   await page.waitForTimeout(300);
   const still = await page.evaluate(() => window.viewer.stats());
   assert.ok(still.calls <= 10, `draw calls: ${still.calls}`);
@@ -1426,4 +1427,41 @@ test('lighter versions are only drawn: clicks and measurements are the same with
   assert.ok(coarse.m && full.m, 'measured');
   assert.equal(coarse.m.d, full.m.d);
   assert.deepEqual(coarse.m.points, full.m.points);
+});
+
+test('precision: a box 20 km away measures 1234.5 mm and 16 mm exactly', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, reducedMotion: 'reduce' });
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await page.route(/^https?:/, (route) => route.abort());
+  await page.goto(pathToFileURL(path.join(out, 'far.html')).href);
+  assert.equal(await page.evaluate(() => window.viewer.ready), true);
+  await page.waitForSelector('#status', { state: 'hidden' });
+  const far = (await els(page)).find((e) => e.id === 900002);
+  const [lo, hi] = far.box;
+  await page.click('#tb-measure');
+  // frame the box with room on its left, where the measure panel is
+  await page.evaluate(([a, b]) => window.viewer.fitBox(a, b), [[lo[0] - 1.6, lo[1], lo[2]], hi]);
+  await page.waitForTimeout(300);
+  // corners of a face, each clicked a few pixels towards the face's centre (then snapped)
+  const measure = async (p, q, centre) => {
+    const a = await nearCorner(page, p, centre), b = await nearCorner(page, q, centre);
+    await page.mouse.click(...a);
+    await page.mouse.move(b[0], b[1] + 1);
+    await page.mouse.move(...b);
+    await page.mouse.click(...b);
+    return (await page.evaluate(() => window.viewer.measures())).at(-1);
+  };
+  // the long top edge of the face towards the viewer; the short edge of the end facing it
+  const long = await measure([lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]], [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, hi[2]]);
+  assert.ok(Math.abs(long.d - 1.2345) < 1e-5, `length ${long.d}`);
+  assert.ok(Math.abs(long.points[0][0] - 25000) < 1e-6, `20 km from the other box (Revit x 5000 + 20000): ${long.points[0]}`);
+  await page.click('#m-clear');   // its dots sit on the corners the next one starts from
+  // close up on the end, where the 16 mm is wide enough on screen to pick both corners
+  await page.evaluate(([a, b]) => window.viewer.fitBox(a, b), [[lo[0] - 0.06, hi[1] - 0.06, lo[2] - 0.02], [lo[0] + 0.02, hi[1] + 0.02, hi[2] + 0.02]]);
+  await page.waitForTimeout(300);
+  const thin = await measure([lo[0], hi[1], hi[2]], [lo[0], hi[1], lo[2]], [lo[0], (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2]);
+  assert.ok(Math.abs(thin.d - 0.016) < 1e-5, `thickness ${thin.d}`);
+  assert.deepEqual(errors, []);
+  await page.close();
 });

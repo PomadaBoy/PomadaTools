@@ -95,6 +95,9 @@ namespace RevitThreeExport
                 scene.Elements.Add(g);
             }
 
+            // each type's parameters once, for all its elements (their typeRef)
+            if (meta.Types.Count > 0) scene.RootExtras["types"] = meta.Types;
+
             // ---- file: write next to the target, then replace it ----
             if (options.Progress != null && !options.Progress("Writing file", 0, 1)) return Cancel(result, clock);
             var dir = Path.GetDirectoryName(Path.GetFullPath(options.OutputPath));

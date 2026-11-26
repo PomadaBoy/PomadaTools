@@ -188,8 +188,15 @@ async function init() {
   // the glTF scene is not drawn itself: its meshes are drawn in batches (see batches.js)
   model.updateMatrixWorld(true);
 
+  // type parameters are stored once per type (root "types"); elements name theirs by typeRef
+  const types = model.children[0]?.userData?.types ?? null;
   model.traverse((o) => {
     if (!(o.userData?.id && o.userData?.category)) return;
+    const t = types && o.userData.typeRef != null ? types[o.userData.typeRef] : null;
+    if (t && !o.userData.typeParams) {
+      o.userData.typeParams = t.params ?? {};
+      o.userData.typeParamNumbers = t.numbers ?? {};
+    }
     const e = {
       i: elements.length, obj: o, d: o.userData, text: searchText(o.userData), meshes: [],
       box0: new THREE.Box3().setFromObject(o), orig: o.position.clone(),

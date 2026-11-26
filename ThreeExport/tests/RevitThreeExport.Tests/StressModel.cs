@@ -12,6 +12,9 @@ namespace RevitThreeExport.Tests
     /// A big steel hall for speed work (tests/out/stress.html): about 30,000 elements, most
     /// of them bolts and nuts placed many times, like a steel model with its connections,
     /// and reinforcement in the footings. The viewer's bench script and batching tests use it.
+    /// Written as the exporter writes a model: each element with its own origin (and turned
+    /// like a family instance where it is), so repeated parts share one mesh, and type
+    /// parameters once per type in the root's "types".
     /// </summary>
     public static class StressModel
     {
@@ -73,6 +76,7 @@ namespace RevitThreeExport.Tests
             scene.Elements.AddRange(b.Elements
                 .OrderBy(e => e.Category, StringComparer.Ordinal)
                 .ThenBy(e => (long)e.Extras["id"]));
+            scene.RootExtras["types"] = b.Types;
             return scene;
         }
 
@@ -81,7 +85,18 @@ namespace RevitThreeExport.Tests
             private readonly GlbScene _scene;
             private readonly double[] _o;
             private long _id = 2000000;
+            private static readonly double[] Zero = { 0, 0, 0 };
             public readonly List<GlbElement> Elements = new List<GlbElement>();
+            public readonly JsonObject Types = new JsonObject();
+
+            /// <summary>The element's own origin at (x, y, z), turned deg about Z: its geometry is drawn around 0.</summary>
+            private void Place(GlbElement e, double x, double y, double z, double deg = 0)
+            {
+                e.Origin = new[] { x - _o[0], y - _o[1], z - _o[2] };
+                if (deg == 0) return;
+                double a = deg * Math.PI / 180, c = Math.Round(Math.Cos(a), 12), s = Math.Round(Math.Sin(a), 12);
+                e.Basis = new[] { c, s, 0, -s, c, 0, 0, 0, 1 };
+            }
 
             public Builder(GlbScene scene, double[] origin) { _scene = scene; _o = origin; }
 
@@ -110,10 +125,12 @@ namespace RevitThreeExport.Tests
                     { "category", category }, { "family", family }, { "type", type }, { "level", level },
                     { "volume_m3", Math.Round(volume, 6) },
                     { "materials", new List<object> { Mats[material].Name } },
-                    { "params", ps }, { "typeParams", tp },
+                    { "params", ps },
                     { "paramNumbers", new JsonObject { { "Length", Math.Round(length, 6) }, { "Volume", Math.Round(volume, 9) } } },
-                    { "typeParamNumbers", new JsonObject() },
+                    { "typeRef", (string)ps["Type Id"] },
                 };
+                if (!Types.ContainsKey((string)ps["Type Id"]))
+                    Types[(string)ps["Type Id"]] = new JsonObject { { "params", tp }, { "numbers", new JsonObject() } };
                 Elements.Add(e);
                 return e;
             }
@@ -123,23 +140,26 @@ namespace RevitThreeExport.Tests
             public void Footing(double x, double y)
             {
                 var f = Element("Structural Foundations", "Footing-Rectangular", "Temelj 150x150x80", "Temelji", Concrete, 1500, 1.8);
-                Shapes.Box(Prim(f), x - 0.75, y - 0.75, -0.8, x + 0.75, y + 0.75, 0, _o);
+                Place(f, x, y, 0);
+                Shapes.Box(Prim(f), -0.75, -0.75, -0.8, 0.75, 0.75, 0, Zero);
                 // a rebar set: two layers of eight bars each way
                 var r = Element("Structural Rebar", "Rebar Bar", "Ø16 B500B", "Temelji", Rebar, 1400, 0.0045);
+                Place(r, x, y, 0);
                 for (var layer = 0; layer < 2; layer++)
                     for (var k = 0; k < 8; k++)
                     {
                         var t = -0.65 + k * 1.3 / 7;
                         var z = -0.72 + layer * 0.64;
-                        Shapes.Tube(Prim(r), new[] { x - 0.7, y + t, z }, new[] { x + 0.7, y + t, z }, 0.008, 8, _o, segments: 6);
-                        Shapes.Tube(Prim(r), new[] { x + t, y - 0.7, z + 0.02 }, new[] { x + t, y + 0.7, z + 0.02 }, 0.008, 8, _o, segments: 6);
+                        Shapes.Tube(Prim(r), new[] { -0.7, t, z }, new[] { 0.7, t, z }, 0.008, 8, Zero, segments: 6);
+                        Shapes.Tube(Prim(r), new[] { t, -0.7, z + 0.02 }, new[] { t, 0.7, z + 0.02 }, 0.008, 8, Zero, segments: 6);
                     }
             }
 
             public void Column(double x, double y)
             {
                 var c = Element("Structural Columns", "HEB", "HEB 300", "Temelji", Steel, Height * 1000, 0.012 * Height);
-                Shapes.ISection(Prim(c), new[] { x, y, 0.0 }, new[] { x, y, Height }, 0.3, 0.3, 0.019, 0.011, _o);
+                Place(c, x, y, 0);
+                Shapes.ISection(Prim(c), new[] { 0.0, 0, 0 }, new[] { 0.0, 0, Height }, 0.3, 0.3, 0.019, 0.011, Zero);
             }
 
             public void Beam(double x0, double y0, double x1, double y1, bool purlin = false)
@@ -148,7 +168,9 @@ namespace RevitThreeExport.Tests
                 var e = Element("Structural Framing", purlin ? "IPE" : "HEA", purlin ? "IPE 160" : "HEA 400", "Krov", Steel, len * 1000, (purlin ? 0.002 : 0.016) * len);
                 double z = purlin ? Height + 0.47 : Height - 0.2;
                 double h = purlin ? 0.16 : 0.39, w = purlin ? 0.082 : 0.3;
-                Shapes.ISection(Prim(e), new[] { x0, y0, z - h / 2 }, new[] { x1, y1, z - h / 2 }, h, w, purlin ? 0.0074 : 0.019, purlin ? 0.005 : 0.011, _o, vertical: false);
+                // drawn along local X from its start, turned to its direction
+                Place(e, x0, y0, z - h / 2, Math.Atan2(y1 - y0, x1 - x0) * 180 / Math.PI);
+                Shapes.ISection(Prim(e), new[] { 0.0, 0, 0 }, new[] { len, 0, 0 }, h, w, purlin ? 0.0074 : 0.019, purlin ? 0.005 : 0.011, Zero, vertical: false);
             }
 
             /// <summary>A round handrail pipe along the hall at y, height z: 19,200 triangles.</summary>
@@ -156,7 +178,8 @@ namespace RevitThreeExport.Tests
             {
                 var len = Nx * Span;
                 var e = Element("Railings", "Ograda", "Cev Ø60", "Temelji", Steel, len * 1000, Math.PI * 0.03 * 0.03 * len);
-                Shapes.Tube(Prim(e), new[] { 0.0, y, z }, new[] { len, y, z }, 0.03, 24, _o, segments: 400);
+                Place(e, 0, y, z);
+                Shapes.Tube(Prim(e), new[] { 0.0, 0, 0 }, new[] { len, 0, 0 }, 0.03, 24, Zero, segments: 400);
             }
 
             /// <summary>An end plate facing direction deg (0 = +X) at the column top, with its bolts and nuts.</summary>
@@ -164,21 +187,23 @@ namespace RevitThreeExport.Tests
             {
                 double a = deg * Math.PI / 180, ux = Math.Cos(a), uy = Math.Sin(a);   // plate normal
                 double vx = -uy, vy = ux;                                              // along the plate
+                // each part is a family instance: drawn in its own axes (local X = the plate's
+                // normal), turned by deg, so all plates, bolts and nuts share three meshes
                 var plate = Element("Structural Connections", "Čeona ploča", "Ploča 300x450x20", "Krov", Steel, 450, 0.0027);
                 var pc = new[] { x, y, Height - 0.2 };
-                Shapes.OrientedBox(Prim(plate), pc, new[] { ux, uy, 0 }, new[] { vx, vy, 0 }, 0.02, 0.3, 0.45, _o);
+                Place(plate, pc[0], pc[1], pc[2], deg);
+                Shapes.OrientedBox(Prim(plate), Zero, new[] { 1.0, 0, 0 }, new[] { 0.0, 1, 0 }, 0.02, 0.3, 0.45, Zero);
                 for (var k = 0; k < BoltsPerPlate; k++)
                 {
                     double s = (k % 2 == 0 ? -1 : 1) * 0.1, zz = -0.19 + (k / 2) * 0.38 / 7;
                     var at = new[] { pc[0] + vx * s, pc[1] + vy * s, pc[2] + zz };
-                    var head = new[] { at[0] - ux * 0.03, at[1] - uy * 0.03, at[2] };
-                    var tip = new[] { at[0] + ux * 0.05, at[1] + uy * 0.05, at[2] };
                     var bolt = Element("Structural Connections", "Vijak M20", "M20x80 8.8", "Krov", Zinc, 80, 0.00003);
-                    Shapes.Tube(Prim(bolt), new[] { head[0] - ux * 0.013, head[1] - uy * 0.013, head[2] }, head, 0.017, 6, _o, caps: true);
-                    Shapes.Tube(Prim(bolt), head, tip, 0.01, 8, _o, caps: true);
+                    Place(bolt, at[0], at[1], at[2], deg);
+                    Shapes.Tube(Prim(bolt), new[] { -0.043, 0, 0 }, new[] { -0.03, 0, 0 }, 0.017, 6, Zero, caps: true);
+                    Shapes.Tube(Prim(bolt), new[] { -0.03, 0, 0 }, new[] { 0.05, 0, 0 }, 0.01, 8, Zero, caps: true);
                     var nut = Element("Structural Connections", "Navrtka M20", "M20 8", "Krov", Zinc, 16, 0.00001);
-                    var n0 = new[] { at[0] + ux * 0.012, at[1] + uy * 0.012, at[2] };
-                    Shapes.Tube(Prim(nut), n0, new[] { n0[0] + ux * 0.016, n0[1] + uy * 0.016, n0[2] }, 0.017, 6, _o, caps: true);
+                    Place(nut, at[0], at[1], at[2], deg);
+                    Shapes.Tube(Prim(nut), new[] { 0.012, 0, 0 }, new[] { 0.028, 0, 0 }, 0.017, 6, Zero, caps: true);
                 }
             }
         }
@@ -286,6 +311,9 @@ namespace RevitThreeExport.Tests
         {
             var glb = TestUtil.WriteGlb(StressModel.Build(), out var stats);
             Assert.InRange(stats.Elements, 25000, 40000);
+            // repeated parts share their mesh: about a dozen distinct shapes
+            Assert.InRange(stats.Meshes, 5, 40);
+            Assert.Equal(stats.Elements - stats.Meshes, stats.SharedElements);
             var dir = TestUtil.OutDir;
             File.WriteAllBytes(Path.Combine(dir, "stress.glb"), glb);
             using (var fs = new FileStream(Path.Combine(dir, "stress.html"), FileMode.Create, FileAccess.Write))
@@ -293,6 +321,7 @@ namespace RevitThreeExport.Tests
             File.WriteAllText(Path.Combine(dir, "stress.stats.json"), Json.Serialize(new JsonObject
             {
                 { "elements", stats.Elements }, { "triangles", stats.Triangles }, { "vertices", stats.Vertices }, { "bytes", stats.Bytes },
+                { "meshes", stats.Meshes },
                 { "perCategory", stats.PerCategory.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => (object)kv.Value) },
             }));
         }
