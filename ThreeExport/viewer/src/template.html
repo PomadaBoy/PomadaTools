@@ -70,6 +70,8 @@
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
   }
+  /* while the view moves the blur behind the cards would be redone every frame: skip it */
+  body.moving .card { backdrop-filter: none; -webkit-backdrop-filter: none; }
   #head {
     top: calc(var(--gap) + env(safe-area-inset-top, 0px));
     left: calc(var(--gap) + env(safe-area-inset-left, 0px));

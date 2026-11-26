@@ -1233,3 +1233,58 @@ test('phones: the inspect sheet closes with ×, a swipe down and the Back button
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test('frames are drawn only when something changes, and every change is drawn', async () => {
+  const { page, errors } = await open({ reducedMotion: 'no-preference' });
+  const frames = async () => (await page.evaluate(() => window.viewer.stats())).frames;
+  // until no frame has been drawn for 400 ms (orbit damping runs on for about a second)
+  const settle = async () => {
+    let last = await frames(), since = Date.now();
+    const t0 = Date.now();
+    while (Date.now() - since < 400) {
+      assert.ok(Date.now() - t0 < 4000, 'the view never comes to rest');
+      await page.waitForTimeout(50);
+      const n = await frames();
+      if (n !== last) { last = n; since = Date.now(); }
+    }
+  };
+  const shot = () => page.locator('#viewport canvas').screenshot();
+  await settle();
+  // still: no frames at all
+  let f0 = await frames();
+  await page.waitForTimeout(1000);
+  assert.equal(await frames(), f0, 'a still model draws nothing');
+
+  // orbiting draws, then stops
+  const box = await page.locator('#viewport canvas').boundingBox();
+  await page.mouse.move(box.x + 200, box.y + 200);
+  await page.mouse.down();
+  for (let i = 1; i <= 10; i++) await page.mouse.move(box.x + 200 + i * 15, box.y + 200);
+  await page.mouse.up();
+  await settle();
+  const f1 = await frames();
+  assert.ok(f1 > f0 + 3, `orbiting drew ${f1 - f0} frames`);
+  assert.equal((await page.evaluate(() => window.viewer.stats())).pixelRatio, 1, 'the last frame is at full resolution');
+
+  // a filter applied after a typing pause is drawn
+  const before = await shot();
+  await page.click('#tb-filter');
+  await page.fill('#f-search', 'Roofs');
+  await page.waitForTimeout(600);
+  assert.ok(!(await shot()).equals(before), 'the filtered model is drawn');
+  // explode animates and stops
+  await page.fill('#f-search', '');
+  await page.click('#tb-explode');
+  await settle();
+  const f2 = await frames();
+  await page.locator('#explode-amount').fill('60');
+  await settle();
+  const f3 = await frames();
+  assert.ok(f3 > f2 + 3, `explode drew ${f3 - f2} frames`);
+  // a theme change redraws the grid
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+  await page.waitForTimeout(300);
+  assert.ok(await frames() > f3, 'the theme change is drawn');
+  assert.deepEqual(errors(), []);
+  await page.close();
+});

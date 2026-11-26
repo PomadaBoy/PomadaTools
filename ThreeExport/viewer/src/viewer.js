@@ -31,6 +31,16 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.info.autoReset = false;   // a frame is two passes (model, overlay): counted together
 let framesDrawn = 0;
+
+// Frames are drawn only when something changed: a still model costs nothing (on a slow PC a
+// frame of a big model takes a fifth of a second). invalidate(n): draw the next n frames.
+let needsRender = 2;
+const invalidate = (n = 1) => { needsRender = Math.max(needsRender, n); };
+// a safety net: any input may change what is shown, so draw a couple of frames after it
+for (const type of ['pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'click']) {
+  window.addEventListener(type, () => invalidate(2), { capture: true, passive: true });
+}
+window.addEventListener('pointermove', (ev) => { if (ev.buttons) invalidate(2); }, { capture: true, passive: true });
 viewport.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -58,6 +68,7 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   measure?.setSize(w, h);
+  invalidate(2);
 }
 new ResizeObserver(resize).observe(viewport);
 
@@ -231,6 +242,7 @@ function applyTheme() {
   grid.material.opacity = 0.85;
   overlay.add(grid);
   if (colour.scheme) refreshColourTheme();
+  invalidate(2);
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -271,6 +283,7 @@ function fit(obj, animate = true) {
     controls.target.copy(sphere.center);
     camera.position.copy(to);
     controls.update();
+    invalidate(2);
     return;
   }
   flight = { t: 0, fromPos: camera.position.clone(), fromTgt: controls.target.clone(), toPos: to, toTgt: sphere.center.clone() };
@@ -298,6 +311,7 @@ function paint(e) {
     if (colour.scheme) mat = colourMaterial(colour.byMesh ? meshTone.get(m) : e.tone, mat);
     m.material = e.ghost ? ghostMaterial : sel ? highlightOf(mat) : mat;
   }
+  invalidate();
 }
 
 // colour by parameter: one material per colour (and transparency), shared by all meshes
@@ -426,7 +440,7 @@ const endDrag = (ev) => {
 };
 viewport.addEventListener('pointerup', endDrag);
 viewport.addEventListener('pointercancel', endDrag);
-viewport.addEventListener('pointerleave', () => { hoverAt = null; if (measureMode()) measure.preview(null); });
+viewport.addEventListener('pointerleave', () => { hoverAt = null; if (measureMode()) { measure.preview(null); invalidate(); } });
 
 /**
  * Pointer moves: handle cursor, and the measuring preview. A raycast on a big model takes
@@ -445,6 +459,7 @@ function hover() {
   if (measureMode()) {
     const s = onHandle ? null : surfaceAt(ev);
     measure.preview(s?.anchor ?? null, s?.snapped, mState.first);
+    invalidate();
   }
 }
 
@@ -695,9 +710,10 @@ function updateExplode(animate = true) {
   explode.anim = { start: performance.now(), duration: 450 };
 }
 
+/** Moves the elements a step of the explode animation; true while it runs. */
 function stepExplode(now) {
   const a = explode.anim;
-  if (!a) return;
+  if (!a) return false;
   const t = Math.min((now - a.start) / a.duration, 1);
   const k = ease(t);
   for (const e of elements) {
@@ -706,6 +722,7 @@ function stepExplode(now) {
     place(e);
   }
   if (t >= 1) explode.anim = null;
+  return true;
 }
 
 function setupExplode() {
@@ -777,6 +794,7 @@ function applyVisibility() {
     e.obj.visible = shown;
     if (repaint) paint(e);
   }
+  invalidate();
   if (selected) {
     const s = byObject.get(selected);
     if (!s.shown || s.ghost) select(null);
@@ -1164,6 +1182,7 @@ function boxCut(e) {
 
 let cutsKey = '';
 function renderCuts() {
+  invalidate(2);
   const card = $('#cuts'), list = $('#cut-list');
   card.hidden = !cuts.count;
   const key = cuts.items.map((i) => i.id).join(',') + (cuts.box ? ',box' : '');
@@ -1897,17 +1916,73 @@ function setupTools() {
 
 // ---------- loop ----------
 const ease = (t) => 1 - Math.pow(1 - t, 3);
-renderer.setAnimationLoop((now) => {
-  stepExplode(now ?? performance.now());
+
+// While the view moves on a slow machine, frames are drawn at a lower resolution (down to a
+// pixel ratio of 0.6); once it is still, one sharp frame at full resolution follows.
+const basePixelRatio = () => Math.min(window.devicePixelRatio || 1, 2);
+const motion = { scale: 1, avg: 0, last: 0, until: 0, active: false };
+function setMoving(on, now) {
+  if (on) motion.until = now + 200;
+  if (on === motion.active) return;
+  motion.active = on;
+  document.body.classList.toggle('moving', on);
+  const ratio = on ? Math.max(0.6, basePixelRatio() * motion.scale) : basePixelRatio();
+  if (Math.abs(renderer.getPixelRatio() - ratio) > 0.01) renderer.setPixelRatio(ratio);
+  motion.last = 0;
+  if (!on) invalidate();   // the sharp frame
+}
+/** After each frame drawn while moving: learn how fast frames are, and adapt the resolution. */
+function adaptResolution(now) {
+  if (motion.last) {
+    const dt = now - motion.last;
+    motion.avg = motion.avg ? motion.avg * 0.7 + dt * 0.3 : dt;
+    let scale = motion.scale;
+    if (motion.avg > 25 && basePixelRatio() * scale > 0.6) scale *= 0.85;
+    else if (motion.avg < 12 && scale < 1) scale = Math.min(1, scale / 0.85);
+    if (scale !== motion.scale) {
+      motion.scale = scale;
+      renderer.setPixelRatio(Math.max(0.6, basePixelRatio() * scale));
+      motion.avg = 0;
+    }
+  }
+  motion.last = now;
+}
+
+// The camera as last drawn: damping keeps moving it for a second or two after a drag, by
+// amounts too small to see; those steps are not worth a frame.
+const drawnCam = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
+function cameraShiftPx() {
+  const h = viewport.clientHeight, fov = THREE.MathUtils.degToRad(camera.fov);
+  const turn = 2 * Math.acos(Math.min(1, Math.abs(camera.quaternion.dot(drawnCam.quat))));
+  const dist = Math.max(camera.position.distanceTo(controls.target), 1e-6);
+  const slide = camera.position.distanceTo(drawnCam.pos) / dist;
+  return ((turn + slide) / fov) * h;
+}
+
+let lastTick = 0;
+renderer.setAnimationLoop((t) => {
+  const now = t ?? performance.now();
+  // damping by time, not by frame: on a slow machine the view must not drift on for seconds
+  const dt = lastTick ? Math.min(now - lastTick, 250) : 16.7;
+  lastTick = now;
+  controls.dampingFactor = 1 - Math.pow(1 - 0.12, dt / 16.7);
+  let moving = stepExplode(now);
   if (flight) {
     flight.t = Math.min(flight.t + 1 / 30, 1);
     const k = ease(flight.t);
     camera.position.lerpVectors(flight.fromPos, flight.toPos, k);
     controls.target.lerpVectors(flight.fromTgt, flight.toTgt, k);
     if (flight.t >= 1) flight = null;
+    moving = true;
   }
-  controls.update();
+  if (controls.update() && cameraShiftPx() > 0.5) moving = true;
+  if (cuts.drag) moving = true;
   hover();
+  if (moving || moved) { invalidate(); setMoving(true, now); }
+  else if (motion.active && now > motion.until) setMoving(false, now);
+  if (needsRender <= 0) return;
+  needsRender--;
+  if (motion.active) adaptResolution(now);
   placePick();
   if (measure) {
     if (moved) measure.refresh();
@@ -1917,6 +1992,8 @@ renderer.setAnimationLoop((now) => {
   cuts.scaleHandles(camera, viewport.clientHeight);
   // the model with the cuts; then the grid, cut handles and measurements, uncut, on top
   renderer.info.reset();
+  drawnCam.pos.copy(camera.position);
+  drawnCam.quat.copy(camera.quaternion);
   renderer.clippingPlanes = cuts.planes;
   renderer.render(scene, camera);
   renderer.autoClear = false;
