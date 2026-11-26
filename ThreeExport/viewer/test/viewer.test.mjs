@@ -1320,3 +1320,67 @@ test('big model: the spatial index is built after loading and gives the same hit
   assert.ok(withIndex.filter(Boolean).length >= 4, `clicks hit the frame: ${withIndex}`);
   assert.deepEqual(withIndex, without);
 });
+
+test('batches: the drawn model follows selection, hide, show all and ghost', async () => {
+  const { page, errors } = await open();
+  await page.waitForTimeout(300);
+  const st = await page.evaluate(() => window.viewer.stats());
+  assert.ok(st.calls <= 6, `a few draw calls: ${st.calls}`);
+  const meshCount = await page.evaluate(() => window.viewer.elements().reduce((n, e) => n + e.colours.length, 0));
+  assert.equal(st.batches.instances, meshCount, 'every mesh is in a batch');
+  // a few pixels in the middle of a wall facing the view
+  const wall = (await els(page)).find((e) => e.category === 'Walls' && e.id === 843064);
+  const [x, y] = await page.evaluate((id) => window.viewer.screenPoint(id), wall.id);
+  const clip = { x: Math.round(x) - 3, y: Math.round(y) - 3, width: 6, height: 6 };
+  const spot = async () => { await page.waitForTimeout(150); return page.screenshot({ clip }); };
+  const plain = await spot();
+  await page.mouse.click(x, y);
+  assert.ok((await page.evaluate(() => window.viewer.state())).selected, 'an element under the spot');
+  assert.ok(!(await spot()).equals(plain), 'the selected element is drawn highlighted');
+  await page.keyboard.press('h');
+  await page.keyboard.press('h');
+  assert.equal((await page.evaluate(() => window.viewer.state())).hidden, 1);
+  const hidden = await spot();
+  assert.ok(!hidden.equals(plain), 'the hidden element is not drawn');
+  await page.click('#vis-all');
+  assert.ok((await spot()).equals(plain), 'shown again, as before');
+  // ghost: everything but the roofs faint
+  await page.click('#tb-filter');
+  await page.click('#f-mode button[data-mode="ghost"]');
+  await page.fill('#f-search', 'Roofs');
+  await page.waitForTimeout(400);
+  assert.equal((await page.evaluate(() => window.viewer.stats())).batches.ghost, true);
+  const ghosted = await spot();
+  assert.ok(!ghosted.equals(plain) && !ghosted.equals(hidden), 'the ghosted wall is drawn faint');
+  await page.fill('#f-search', '');
+  await page.waitForTimeout(400);
+  assert.ok((await spot()).equals(plain), 'not ghosted any more');
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
+test('big model: a few draw calls; tiny parts are left out while the view moves', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, reducedMotion: 'reduce' });
+  await page.route(/^https?:/, (route) => route.abort());
+  await page.goto(pathToFileURL(path.join(out, 'stress.html')).href, { timeout: 120000 });
+  assert.equal(await page.evaluate(() => window.viewer.ready), true);
+  await page.waitForSelector('#status', { state: 'hidden', timeout: 120000 });
+  await page.waitForTimeout(300);
+  const still = await page.evaluate(() => window.viewer.stats());
+  assert.ok(still.calls <= 10, `draw calls: ${still.calls}`);
+  assert.ok(still.batches.instances > 28000);
+  const box = await page.locator('#viewport canvas').boundingBox();
+  await page.mouse.move(box.x + 600, box.y + 400);
+  await page.mouse.down();
+  for (let i = 1; i <= 4; i++) {
+    await page.mouse.move(box.x + 600 + i * 10, box.y + 400);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r())));
+  }
+  const moving = await page.evaluate(() => window.viewer.stats());
+  await page.mouse.up();
+  assert.ok(moving.triangles < still.triangles * 0.8, `while moving ${moving.triangles} of ${still.triangles} triangles`);
+  await page.waitForFunction(() => !document.body.classList.contains('moving'), null, { timeout: 10000 });
+  await page.waitForTimeout(200);
+  assert.equal((await page.evaluate(() => window.viewer.stats())).triangles, still.triangles, 'all drawn again when still');
+  await page.close();
+});

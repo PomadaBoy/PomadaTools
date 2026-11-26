@@ -67,8 +67,8 @@ const o1 = await stats();
 await page.mouse.up();
 const orbitFrames = o0 && o1 ? o1.frames - o0.frames : steps;
 const msPerFrame = orbitElapsed / Math.max(orbitFrames, 1);
-for (let i = 0; i < 20; i++) await nextFrame();
-await page.waitForTimeout(500);
+await page.waitForFunction(() => !document.body.classList.contains('moving'), null, { timeout: 30000 });
+await page.waitForTimeout(300);
 const still = await stats();
 
 // clicks on elements in view

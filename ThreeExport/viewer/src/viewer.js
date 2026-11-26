@@ -19,6 +19,7 @@ import { REVIT_AXES, snapNormal, nearestWithin, metres, toRevit, faceEdgeDirecti
 import { buildQto, cellText, toCsv, toSheet, compileFormula, AGGREGATES, VARIES } from './qto.js';
 import { xlsx } from './xlsx.js';
 import { ICONS, placeIcons } from './icons.js';
+import { Batches } from './batches.js';
 
 const $ = (s) => document.querySelector(s);
 const viewport = $('#viewport');
@@ -159,6 +160,7 @@ async function modelBuffer() {
 }
 
 let model = null;
+let batches = null;      // what is drawn: the model's meshes in a few batched draw calls
 let grid = null;
 let glbBytes = null;     // the .glb, for "Download .glb"
 let docInfo = {};        // root node extras: document, view, exportedAt ...
@@ -182,7 +184,7 @@ async function init() {
   statusText.textContent = 'Preparing model…';
   const gltf = await new GLTFLoader().parseAsync(buf, '');
   model = gltf.scene;
-  scene.add(model);
+  // the glTF scene is not drawn itself: its meshes are drawn in batches (see batches.js)
   model.updateMatrixWorld(true);
 
   model.traverse((o) => {
@@ -199,6 +201,10 @@ async function init() {
     byObject.set(o, e);
   });
   docInfo = model.children[0]?.userData ?? {};
+  const meshes = [];
+  model.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  batches = new Batches(scene, ghostMaterial);
+  batches.build(meshes);
 
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
@@ -312,6 +318,7 @@ function paint(e) {
     let mat = baseMaterial.get(m);
     if (colour.scheme) mat = colourMaterial(colour.byMesh ? meshTone.get(m) : e.tone, mat);
     m.material = e.ghost ? ghostMaterial : sel ? highlightOf(mat) : mat;
+    batches?.update(m, e.shown);
   }
   invalidate();
 }
@@ -728,7 +735,12 @@ async function copyText(text) {
 const explode = { mode: 'centre', f: 0, anim: null };
 
 let moved = false;        // explode moved elements this frame: measurements follow
-function place(e) { e.obj.position.copy(e.orig).add(e.offset); moved = true; }
+function place(e) {
+  e.obj.position.copy(e.orig).add(e.offset);
+  e.obj.updateMatrixWorld(true);   // not in the drawn scene: picking and the batches need it now
+  for (const m of e.meshes) batches.move(m);
+  moved = true;
+}
 
 /** Moves every element towards its explode target (animated unless reduced motion). */
 function updateExplode(animate = true) {
@@ -826,6 +838,7 @@ function applyVisibility() {
     e.ghost = ghost;
     e.obj.visible = shown;
     if (repaint) paint(e);
+    else for (const m of e.meshes) batches.update(m, shown);
   }
   invalidate();
   if (selected) {
@@ -2013,9 +2026,10 @@ renderer.setAnimationLoop((t) => {
   hover();
   if (moving || moved) { invalidate(); setMoving(true, now); }
   else if (motion.active && now > motion.until) setMoving(false, now);
-  if (needsRender <= 0) return;
+  if (needsRender <= 0) { motion.last = 0; return; }   // frame times count only for frames in a row
   needsRender--;
   if (motion.active) adaptResolution(now);
+  batches?.skipSmall(motion.active, camera, viewport.clientHeight);
   placePick();
   if (measure) {
     if (moved) measure.refresh();
@@ -2045,7 +2059,7 @@ window.viewer = {
   stats: () => ({
     frames: framesDrawn, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     pixelRatio: renderer.getPixelRatio(), geometries: renderer.info.memory.geometries,
-    bvh: { ...bvh },
+    bvh: { ...bvh }, batches: batches?.info ?? null,
   }),
   elements: () => elements.map((e) => ({
     id: e.d.id, category: e.d.category, link: e.d.link ?? null, match: e.match, shown: e.shown, ghost: e.ghost,
