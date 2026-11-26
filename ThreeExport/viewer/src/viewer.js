@@ -447,6 +447,13 @@ function hover() {
 }
 
 let down = null;
+let swallowClicksUntil = 0;
+document.addEventListener('click', (ev) => {
+  if (!swallowClicksUntil) return;
+  const swallow = performance.now() < swallowClicksUntil && ev.target !== renderer.domElement;
+  swallowClicksUntil = 0;   // only the click that follows the tap
+  if (swallow) { ev.preventDefault(); ev.stopPropagation(); }
+}, true);
 renderer.domElement.addEventListener('pointerdown', (ev) => { down = { x: ev.clientX, y: ev.clientY, t: performance.now() }; });
 renderer.domElement.addEventListener('pointerup', (ev) => {
   if (!down || !model || ev.button !== 0) return;
@@ -455,6 +462,9 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
     if (measureMode()) measureClick(ev);
     else {
       const hit = elementAt(ev);
+      // a finger tap is followed by a click at the same spot: it must not land on the panel or
+      // buttons this tap is about to show there (on phones it hid or isolated the element)
+      if (ev.pointerType !== 'mouse') swallowClicksUntil = performance.now() + 500;
       select(hit?.obj ?? null, hit?.point, hit?.normal);
     }
   }
@@ -535,10 +545,12 @@ function showPanel(obj) {
   ].filter(([, , v]) => v != null && v !== '');
   const nInst = Object.keys(d.params ?? {}).length, nType = Object.keys(d.typeParams ?? {}).length;
   panel.innerHTML = `
-    <header>
+    <header class="p-head">
+      <div class="p-grip" aria-hidden="true"></div>
       <span class="chip">${esc(d.category)}</span>
-      <button class="icon" id="close" type="button" title="Close (Esc)" aria-label="Close">×</button>
+      <button class="icon p-close" id="close" type="button" title="Close (Esc)" aria-label="Close">×</button>
     </header>
+    <div class="p-body">
     <h2>${esc(d.type || d.family || 'Element')}</h2>
     <div class="idrow">
       <span>Element ID</span><code>${esc(d.id)}</code>
@@ -551,8 +563,10 @@ function showPanel(obj) {
     <ul class="mats">${swatches(obj)}</ul>
     <details><summary>Instance parameters <span>${nInst}</span></summary><table>${table(d.params)}</table></details>
     <details><summary>Type parameters <span>${nType}</span></summary><table>${table(d.typeParams)}</table></details>
-    <p class="uid">${esc(d.uniqueId)}</p>`;
+    <p class="uid">${esc(d.uniqueId)}</p>
+    </div>`;
   panel.hidden = false;
+  sheetOpened();
   $('#close').onclick = () => select(null);
   $('#zoom').onclick = () => fit(obj);
   $('#copy').onclick = async (ev) => {
@@ -567,7 +581,60 @@ function showPanel(obj) {
     setTimeout(() => { label.textContent = 'Copy'; }, 1400);
   };
 }
-function hidePanel() { panel.hidden = true; panel.innerHTML = ''; }
+function hidePanel() {
+  panel.hidden = true;
+  panel.innerHTML = '';
+  panel.style.transform = '';
+  sheetClosed();
+}
+
+// Phones: the inspect panel is a bottom sheet. Besides × (always in view), a swipe down on its
+// header closes it, and so does the phone's Back button (opening the sheet adds a history entry).
+const isPhone = () => matchMedia('(max-width: 640px)').matches;
+let sheetEntry = false;   // a history entry was added for the open sheet
+function sheetOpened() {
+  if (sheetEntry || !isPhone()) return;
+  try { history.pushState({ rteSheet: true }, ''); sheetEntry = true; } catch { /* not allowed here */ }
+}
+function sheetClosed() {
+  if (!sheetEntry) return;
+  sheetEntry = false;   // cleared first: the popstate that history.back() causes is then ignored
+  try { history.back(); } catch { /* not allowed here */ }
+}
+window.addEventListener('popstate', () => {
+  if (!sheetEntry) return;
+  sheetEntry = false;
+  select(null);
+});
+
+let sheetDrag = null;
+panel.addEventListener('pointerdown', (ev) => {
+  if (!isPhone() || !ev.target.closest('.p-head') || ev.target.closest('button')) return;
+  sheetDrag = { id: ev.pointerId, y: ev.clientY, t: performance.now(), dy: 0, last: ev.clientY, lastT: performance.now(), v: 0 };
+  panel.setPointerCapture?.(ev.pointerId);
+  panel.classList.add('dragging');
+});
+panel.addEventListener('pointermove', (ev) => {
+  const g = sheetDrag;
+  if (!g || ev.pointerId !== g.id) return;
+  const now = performance.now();
+  g.v = (ev.clientY - g.last) / Math.max(now - g.lastT, 1);   // px per ms, downwards positive
+  g.last = ev.clientY;
+  g.lastT = now;
+  g.dy = Math.max(0, ev.clientY - g.y);
+  panel.style.transform = g.dy ? `translateY(${g.dy}px)` : '';
+});
+const endSheetDrag = (ev) => {
+  const g = sheetDrag;
+  if (!g || ev.pointerId !== g.id) return;
+  sheetDrag = null;
+  panel.releasePointerCapture?.(ev.pointerId);
+  panel.classList.remove('dragging');
+  if (ev.type === 'pointerup' && (g.dy > 70 || (g.dy > 20 && g.v > 0.5))) { select(null); return; }
+  panel.style.transform = '';   // not far enough: back into place
+};
+panel.addEventListener('pointerup', endSheetDrag);
+panel.addEventListener('pointercancel', endSheetDrag);
 
 // row actions; on touch screens a tap on the row shows them
 panel.addEventListener('click', async (ev) => {

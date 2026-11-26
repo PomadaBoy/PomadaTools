@@ -117,13 +117,23 @@
     right: calc(var(--gap) + env(safe-area-inset-right, 0px));
     bottom: calc(var(--gap) + env(safe-area-inset-bottom, 0px));
     width: min(380px, calc(100vw - 2 * var(--gap)));
-    padding: 14px 16px 16px; overflow-y: auto; font-size: 13px;
+    padding: 0; overflow: hidden; font-size: 13px; display: flex; flex-direction: column;
   }
+  /* the header (category, close) stays in view; the rest scrolls */
+  #panel .p-head { position: relative; flex: none; display: flex; justify-content: space-between; align-items: center; padding: 8px 8px 2px 16px; }
+  #panel .p-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 16px; }
+  button.p-close { width: 36px; height: 36px; padding: 0; border-radius: 8px; display: grid; place-items: center; font-size: 26px; }
+  button.p-close:hover { background: var(--well); }
+  .p-grip { display: none; }
   @media (max-width: 640px) {
-    #panel { top: auto; left: calc(var(--gap) + env(safe-area-inset-left, 0px)); width: auto; height: 58%; }
+    #panel { top: auto; left: calc(var(--gap) + env(safe-area-inset-left, 0px)); width: auto; height: 58%; transition: transform .2s ease-out; }
+    #panel.dragging { transition: none; }
+    #panel .p-head { touch-action: none; padding-top: 14px; cursor: grab; }
+    .p-grip { display: block; position: absolute; top: 6px; left: 50%; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: var(--line); }
+    button.p-close { width: 44px; height: 44px; font-size: 28px; }
     #hint { display: none; }
   }
-  #panel header { display: flex; justify-content: space-between; align-items: center; }
+  @media (max-width: 640px) and (prefers-reduced-motion: reduce) { #panel { transition: none; } }
   .chip {
     background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 11.5px;
     padding: 3px 9px; border-radius: 99px; letter-spacing: .03em;

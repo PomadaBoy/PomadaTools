@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { chromium } from 'playwright';
+import { chromium, devices } from 'playwright';
 import { emptyFilter, matches, searchText } from '../src/filter.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -1171,4 +1171,65 @@ test('model information folds away to the title, remembered; folded at first on 
   assert.ok(await phone.isHidden('#doc-meta'), 'phones: folded at first');
   assert.equal(await phone.textContent('#doc-title'), 'Sintetički model');
   await phone.close();
+});
+
+test('phones: the inspect sheet closes with ×, a swipe down and the Back button; × stays in view', async () => {
+  const ctx = await browser.newContext({ ...devices['iPhone 13'], reducedMotion: 'reduce' });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await page.route(/^https?:/, (route) => route.abort());
+  await page.goto(pathToFileURL(html).href);
+  assert.equal(await page.evaluate(() => window.viewer.ready), true);
+  await page.waitForSelector('#status', { state: 'hidden' });
+  // an element low on the screen: where the sheet's buttons appear after the tap
+  const vp = page.viewportSize();
+  let target = null;
+  for (const e of await els(page)) {
+    const [x, y] = await page.evaluate((id) => window.viewer.screenPoint(id), e.id);
+    if (e.category === 'Walls' && y > vp.height * 0.6 && y < vp.height - 40 && x > 40 && x < vp.width - 40) { target = [x, y]; break; }
+  }
+  assert.ok(target, 'a wall low on the screen');
+  const openSheet = async () => {
+    await page.touchscreen.tap(...target);
+    await page.waitForSelector('#panel:not([hidden])');
+    // the click that follows the tap must not press a button of the sheet
+    const st = await page.evaluate(() => window.viewer.state());
+    assert.equal(st.hidden, 0, 'nothing hidden by the tap');
+    assert.equal(st.isolated, null, 'nothing isolated by the tap');
+  };
+  const closed = () => page.waitForSelector('#panel', { state: 'hidden', timeout: 3000 });
+
+  // × is big enough and stays in view when the properties are scrolled to the end
+  await openSheet();
+  await page.$eval('#panel .p-body', (b) => { for (const d of b.querySelectorAll('details')) d.open = true; b.scrollTop = b.scrollHeight; });
+  const x = await page.locator('#close').boundingBox();
+  assert.ok(x.width >= 44 && x.height >= 44, `× is ${x.width}×${x.height}`);
+  assert.equal(await page.evaluate(([cx, cy]) => document.elementFromPoint(cx, cy)?.id, [x.x + x.width / 2, x.y + x.height / 2]), 'close');
+  await page.touchscreen.tap(x.x + x.width / 2, x.y + x.height / 2);
+  await closed();
+
+  // a short drag on the header puts the sheet back; a long one closes it
+  const drag = async (dy) => {
+    const h = await page.locator('#panel .p-head').boundingBox();
+    const sx = h.x + h.width / 2, sy = h.y + 8;
+    await page.mouse.move(sx, sy);
+    await page.mouse.down();
+    await page.mouse.move(sx, sy + dy, { steps: 8 });
+    await page.mouse.up();
+  };
+  await openSheet();
+  await drag(30);
+  assert.ok(await page.isVisible('#panel'), 'a short drag does not close');
+  assert.equal(await page.$eval('#panel', (p) => p.style.transform), '');
+  await drag(140);
+  await closed();
+
+  // the Back button closes it, and only it: the page stays
+  await openSheet();
+  await page.goBack();
+  await closed();
+  assert.equal(await page.evaluate(() => window.viewer.ready), true);
+  assert.deepEqual(errors, []);
+  await ctx.close();
 });
