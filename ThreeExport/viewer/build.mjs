@@ -17,9 +17,18 @@ const outFile = path.resolve(process.argv[2] ??
   path.join(here, '..', 'src', 'RevitThreeExport', 'Resources', 'viewer.html'));
 
 const template = fs.readFileSync(path.join(here, 'src', 'template.html'), 'utf8');
+// bundled libraries whose sources carry no licence comment: their MIT notice goes at the end
+const NOTICES = ['three-mesh-bvh'];
+const notices = NOTICES.map((pkg) => {
+  const dir = path.join(here, 'node_modules', pkg);
+  const { version } = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  const text = fs.readFileSync(path.join(dir, 'LICENSE'), 'utf8').trim().replace(/\*\//g, '* /');
+  return `/*! ${pkg} ${version}\n${text}\n*/`;
+}).join('\n');
 const r = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'viewer.js')], bundle: true, minify: true,
   target: 'es2020', write: false, legalComments: 'eof', logLevel: 'warning', format: 'iife',
+  footer: { js: notices },
 });
 // an inlined script must not contain "</script"
 const js = r.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
@@ -35,6 +44,7 @@ const count = (s) => html.split(s).length - 1;
 if (count('__TITLE__') !== 2) throw new Error(`expected 2 __TITLE__ placeholders, found ${count('__TITLE__')}`);
 if (count('__MODEL_BASE64__') !== 1) throw new Error('expected 1 __MODEL_BASE64__ placeholder');
 if (!/three\.js authors/i.test(js) && !/@license/.test(js)) throw new Error('three.js licence comment missing');
+for (const pkg of NOTICES) if (!js.includes(`/*! ${pkg} `)) throw new Error(`${pkg} licence notice missing`);
 
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
 fs.writeFileSync(outFile, html);

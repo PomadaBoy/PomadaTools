@@ -1288,3 +1288,35 @@ test('frames are drawn only when something changes, and every change is drawn', 
   assert.deepEqual(errors(), []);
   await page.close();
 });
+
+test('big model: the spatial index is built after loading and gives the same hits', async () => {
+  const stress = path.join(out, 'stress.html');
+  const hitsOf = async (noBvh) => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, reducedMotion: 'reduce' });
+    if (noBvh) await page.addInitScript(() => { window.__rteNoBvh = true; });
+    await page.route(/^https?:/, (route) => route.abort());
+    await page.goto(pathToFileURL(stress).href, { timeout: 120000 });
+    assert.equal(await page.evaluate(() => window.viewer.ready), true);
+    await page.waitForSelector('#status', { state: 'hidden', timeout: 120000 });
+    if (!noBvh) {
+      await page.waitForFunction(() => window.viewer.stats().bvh.pending === 0, null, { timeout: 60000 });
+      assert.ok((await page.evaluate(() => window.viewer.stats().bvh.built)) > 100, 'trees built for the rebar sets');
+    }
+    // click a grid of points over the hall (columns, beams, purlins, plates and bolts)
+    const box = await page.locator('#viewport canvas').boundingBox();
+    const ids = [];
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        await page.mouse.click(box.x + box.width * (0.3 + i * 0.13), box.y + box.height * (0.3 + j * 0.13));
+        ids.push(await page.evaluate(() => window.viewer.state().selected));
+        await page.keyboard.press('Escape');
+      }
+    }
+    await page.close();
+    return ids;
+  };
+  const withIndex = await hitsOf(false);
+  const without = await hitsOf(true);
+  assert.ok(withIndex.filter(Boolean).length >= 4, `clicks hit the frame: ${withIndex}`);
+  assert.deepEqual(withIndex, without);
+});

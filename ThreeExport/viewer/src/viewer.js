@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { explodeOffsets } from './explode.js';
 import {
   OPERATORS, FACETS, FIELDS, NONE, emptyFilter, filterActive, matches, searchText, facetValues,
@@ -213,6 +214,7 @@ async function init() {
   fit(model, false);
   setupTools();
   statusEl.hidden = true;
+  buildBoundsTrees();
 }
 
 function fillHeader(info, size) {
@@ -334,6 +336,37 @@ function colourMaterial(tone, base) {
 }
 
 // ---------- picking ----------
+// A spatial index (BVH) per geometry, built after loading while the browser is idle: a click
+// or a measuring snap then tests a few dozen triangles instead of every one. The same
+// triangles are tested, so the hits are the same; the index buffer is left as it is.
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+const bvh = { pending: 0, built: 0 };
+function buildBoundsTrees() {
+  if (window.__rteNoBvh) return;   // tests compare hits with and without the index
+  const geos = new Set();
+  for (const e of elements) for (const m of e.meshes) if (m.geometry.index && m.geometry.index.count >= 96) geos.add(m.geometry);
+  const queue = [...geos].sort((a, b) => b.index.count - a.index.count);   // the slowest to search first
+  bvh.pending = queue.length;
+  const later = window.requestIdleCallback
+    ? (fn) => requestIdleCallback(fn, { timeout: 300 })
+    : (fn) => setTimeout(() => fn({ timeRemaining: () => 10 }), 1);
+  const step = (deadline) => {
+    do {
+      const g = queue.shift();
+      if (!g) break;
+      try {
+        g.boundsTree = new MeshBVH(g, { indirect: true });
+        bvh.built++;
+      } catch (err) {
+        console.warn('spatial index not built:', err);
+      }
+      bvh.pending = queue.length;
+    } while (queue.length && deadline.timeRemaining() > 4);
+    if (queue.length) later(step);
+  };
+  if (queue.length) later(step);
+}
+
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 let selected = null;
@@ -443,14 +476,14 @@ viewport.addEventListener('pointercancel', endDrag);
 viewport.addEventListener('pointerleave', () => { hoverAt = null; if (measureMode()) { measure.preview(null); invalidate(); } });
 
 /**
- * Pointer moves: handle cursor, and the measuring preview. A raycast on a big model takes
- * tens of milliseconds without a spatial index: at most one every 50 ms.
+ * Pointer moves: handle cursor, and the measuring preview. Until the spatial index is built a
+ * raycast on a big model can take tens of milliseconds: at most one every 50 ms then.
  */
 let hoverAt = null, lastHover = 0;
 function hover() {
   if (!hoverAt || !model || cuts.drag) return;
   const now = performance.now();
-  if (now - lastHover < 50) return;   // keep the pointer position for a later frame
+  if (bvh.pending && now - lastHover < 50) return;   // still searching every triangle: not every frame
   lastHover = now;
   const ev = hoverAt;
   hoverAt = null;
@@ -2012,6 +2045,7 @@ window.viewer = {
   stats: () => ({
     frames: framesDrawn, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     pixelRatio: renderer.getPixelRatio(), geometries: renderer.info.memory.geometries,
+    bvh: { ...bvh },
   }),
   elements: () => elements.map((e) => ({
     id: e.d.id, category: e.d.category, link: e.d.link ?? null, match: e.match, shown: e.shown, ghost: e.ghost,
