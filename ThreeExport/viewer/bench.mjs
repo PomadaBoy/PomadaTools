@@ -41,6 +41,9 @@ const gl = await page.evaluate(() => {
   return ext ? c.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'unknown';
 });
 
+// let the spatial index and the lighter versions finish (they are made while idle)
+await page.waitForFunction(() => { const s = window.viewer.stats?.(); return !s?.bvh || s.lod?.done; }, null, { timeout: 120000 }).catch(() => {});
+const readyMs = Date.now() - t0;
 // settle, then count the frames drawn while nothing happens
 for (let i = 0; i < 10; i++) await nextFrame();
 await page.waitForTimeout(800);
@@ -98,7 +101,7 @@ await browser.close();
 const fmt = (n, d = 0) => (Number.isFinite(n) ? n.toFixed(d) : '–');
 console.log(`file            ${path.basename(file)}`);
 console.log(`renderer        ${gl} (${width}x${height} @${dpr}x)`);
-console.log(`load            ${fmt(loadMs)} ms`);
+console.log(`load            ${fmt(loadMs)} ms (index and lighter versions ready at ${fmt(readyMs)} ms)`);
 console.log(`idle frames     ${fmt(idleFps, 1)} per second`);
 console.log(`orbit           ${fmt(msPerFrame)} ms per frame (${orbitFrames} frames in ${orbitElapsed} ms)`);
 console.log(`click → select  ${clicks.length ? clicks.map((c) => `${c}`).join(', ') + ' ms' : 'no element hit'}`);

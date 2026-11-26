@@ -38,6 +38,7 @@ export class Batches {
     this.batches = [];
     this.skipping = false;
     this.cache = new Map();        // geometry -> batchable copy of its attributes
+    this.lods = [];                // { m, s, full, levels: [{ id, error }] } for meshes with lighter versions
   }
 
   /** Puts every mesh into a batch, grouped by how see-through its material is. */
@@ -80,6 +81,7 @@ export class Batches {
       batch.perObjectFrustumCulled = true;
       const ids = new Map();
       for (const geo of geos) ids.set(geo, batch.addGeometry(this._batchable(geo)));
+      batch.userData.geometryIds = ids;
       for (const m of chunk) {
         const id = batch.addInstance(ids.get(m.geometry));
         batch.setMatrixAt(id, m.matrixWorld);
@@ -174,8 +176,65 @@ export class Batches {
     }
   }
 
+  /**
+   * Adds lighter versions of geometries (lod.js) to the batches that draw them. lods: Map
+   * geometry -> [{ geometry, error }], finest first. Each batch grows once, then chooseLods()
+   * switches instances between the versions.
+   */
+  addLods(lods) {
+    for (const batch of this.batches) {
+      const ids = batch.userData.geometryIds;
+      if (!ids || batch.material.name === 'batch ghost') continue;
+      let extraV = 0, extraI = 0;
+      const here = [];
+      for (const [geo] of ids) {
+        const levels = lods.get(geo);
+        if (!levels?.length) continue;
+        here.push([geo, levels]);
+        for (const l of levels) { extraV += l.geometry.getAttribute('position').count; extraI += l.geometry.index.count; }
+      }
+      if (!here.length) continue;
+      batch.setGeometrySize(batch._maxVertexCount + extraV, batch._maxIndexCount + extraI);
+      const levelIds = new Map();
+      for (const [geo, levels] of here) levelIds.set(geo, levels.map((l) => ({ id: batch.addGeometry(l.geometry), error: l.error })));
+      for (const [m, s] of this.slots) {
+        if (s.batch !== batch || !levelIds.has(m.geometry)) continue;
+        this.lods.push({ m, s, full: ids.get(m.geometry), levels: levelIds.get(m.geometry), current: -1 });
+      }
+    }
+    return this.lods.length;
+  }
+
+  /**
+   * For each mesh with lighter versions: the lightest one whose error is under maxPx pixels on
+   * screen at its distance, or the full mesh. True if any changed.
+   */
+  chooseLods(camera, heightPx, maxPx) {
+    if (!this.lods.length) return false;
+    const k = heightPx / 2 / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+    const eye = camera.position;
+    let changed = false;
+    for (const l of this.lods) {
+      const geo = l.m.geometry;
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      _sphere.copy(geo.boundingSphere).applyMatrix4(l.m.matrixWorld);
+      const d = Math.max(_sphere.center.distanceTo(eye) - _sphere.radius, 1e-6);
+      let pick = -1;
+      for (let i = l.levels.length - 1; i >= 0; i--) {
+        if ((l.levels[i].error * k) / d < maxPx) { pick = i; break; }
+      }
+      if (pick !== l.current) {
+        l.current = pick;
+        l.s.batch.setGeometryIdAt(l.s.id, pick < 0 ? l.full : l.levels[pick].id);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   /** Draw calls the batches need at most, and how many meshes they hold. */
   get info() {
-    return { batches: this.batches.length, instances: this.slots.size, ghost: !!this.ghostSlots };
+    const levels = this.lods.reduce((n, l) => n + (l.current >= 0 ? 1 : 0), 0);
+    return { batches: this.batches.length, instances: this.slots.size, ghost: !!this.ghostSlots, lods: this.lods.length, lighter: levels };
   }
 }

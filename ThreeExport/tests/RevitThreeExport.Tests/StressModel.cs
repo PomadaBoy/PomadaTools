@@ -66,6 +66,9 @@ namespace RevitThreeExport.Tests
             for (var i = 0; i < Nx; i++)
                 for (var k = 1; k < 4; k++)
                     b.Beam(i * Span + k * Span / 4, 0, i * Span + k * Span / 4, Ny * Span, purlin: true);
+            // handrails along the long sides, finely tessellated like Revit's round sections
+            for (var k = 0; k < 4; k++)
+                b.Handrail(-1.0 - (k % 2) * 0.4, 0.9 + (k / 2) * 0.2);
 
             scene.Elements.AddRange(b.Elements
                 .OrderBy(e => e.Category, StringComparer.Ordinal)
@@ -146,6 +149,14 @@ namespace RevitThreeExport.Tests
                 double z = purlin ? Height + 0.47 : Height - 0.2;
                 double h = purlin ? 0.16 : 0.39, w = purlin ? 0.082 : 0.3;
                 Shapes.ISection(Prim(e), new[] { x0, y0, z - h / 2 }, new[] { x1, y1, z - h / 2 }, h, w, purlin ? 0.0074 : 0.019, purlin ? 0.005 : 0.011, _o, vertical: false);
+            }
+
+            /// <summary>A round handrail pipe along the hall at y, height z: 19,200 triangles.</summary>
+            public void Handrail(double y, double z)
+            {
+                var len = Nx * Span;
+                var e = Element("Railings", "Ograda", "Cev Ø60", "Temelji", Steel, len * 1000, Math.PI * 0.03 * 0.03 * len);
+                Shapes.Tube(Prim(e), new[] { 0.0, y, z }, new[] { len, y, z }, 0.03, 24, _o, segments: 400);
             }
 
             /// <summary>An end plate facing direction deg (0 = +X) at the column top, with its bolts and nuts.</summary>

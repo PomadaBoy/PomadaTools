@@ -1384,3 +1384,46 @@ test('big model: a few draw calls; tiny parts are left out while the view moves'
   assert.equal((await page.evaluate(() => window.viewer.stats())).triangles, still.triangles, 'all drawn again when still');
   await page.close();
 });
+
+test('lighter versions are only drawn: clicks and measurements are the same with them as without', async () => {
+  const stress = path.join(out, 'stress.html');
+  const run = async (init) => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, reducedMotion: 'reduce' });
+    await page.addInitScript(init);
+    await page.route(/^https?:/, (route) => route.abort());
+    await page.goto(pathToFileURL(stress).href, { timeout: 120000 });
+    assert.equal(await page.evaluate(() => window.viewer.ready), true);
+    await page.waitForSelector('#status', { state: 'hidden', timeout: 120000 });
+    await page.waitForFunction(() => { const s = window.viewer.stats(); return s.lod.done; }, null, { timeout: 120000 });
+    await page.waitForTimeout(300);
+    const st = await page.evaluate(() => window.viewer.stats());
+    // close up on the middle of a handrail
+    const rail = (await els(page)).find((e) => e.category === 'Railings');
+    const [[x0, y0, z0], [x1, y1, z1]] = rail.box;
+    const along = (t) => [x0 + (x1 - x0) * t, (y0 + y1) / 2, (z0 + z1) / 2];
+    await page.evaluate(([a, b]) => window.viewer.fitBox(a, b), [along(0.49).map((v) => v - 0.05), along(0.51).map((v) => v + 0.05)]);
+    await page.waitForTimeout(300);
+    const p = await page.evaluate((v) => window.viewer.project(v), along(0.495));
+    const q = await page.evaluate((v) => window.viewer.project(v), along(0.505));
+    await page.mouse.click(...p);
+    const hit = await page.evaluate(() => window.viewer.state().selected);
+    await page.keyboard.press('Escape');
+    await page.click('#tb-measure');
+    await page.mouse.click(...p);
+    await page.mouse.move(q[0], q[1] + 1);
+    await page.mouse.move(...q);
+    await page.mouse.click(...q);
+    const m = (await page.evaluate(() => window.viewer.measures())).at(-1);
+    await page.close();
+    return { st, hit, m, rail };
+  };
+  const coarse = await run(() => { window.__rteLodPx = 1e9; });   // the lightest version everywhere
+  const full = await run(() => { window.__rteNoLod = true; });
+  assert.ok(coarse.st.batches.lods >= 4, `lighter versions made: ${coarse.st.batches.lods}`);
+  assert.ok(coarse.st.triangles < full.st.triangles, `fewer triangles drawn: ${coarse.st.triangles} < ${full.st.triangles}`);
+  assert.equal(coarse.hit, coarse.rail.id, 'the click hits the handrail');
+  assert.equal(coarse.hit, full.hit);
+  assert.ok(coarse.m && full.m, 'measured');
+  assert.equal(coarse.m.d, full.m.d);
+  assert.deepEqual(coarse.m.points, full.m.points);
+});

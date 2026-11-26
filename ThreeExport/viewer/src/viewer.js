@@ -20,6 +20,7 @@ import { buildQto, cellText, toCsv, toSheet, compileFormula, AGGREGATES, VARIES 
 import { xlsx } from './xlsx.js';
 import { ICONS, placeIcons } from './icons.js';
 import { Batches } from './batches.js';
+import { lodReady, simplifyGeometry, LOD_MIN_TRIANGLES } from './lod.js';
 
 const $ = (s) => document.querySelector(s);
 const viewport = $('#viewport');
@@ -220,7 +221,7 @@ async function init() {
   fit(model, false);
   setupTools();
   statusEl.hidden = true;
-  buildBoundsTrees();
+  buildBoundsTrees(buildLods);
 }
 
 function fillHeader(info, size) {
@@ -348,30 +349,56 @@ function colourMaterial(tone, base) {
 // triangles are tested, so the hits are the same; the index buffer is left as it is.
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 const bvh = { pending: 0, built: 0 };
-function buildBoundsTrees() {
-  if (window.__rteNoBvh) return;   // tests compare hits with and without the index
+const idleLater = window.requestIdleCallback
+  ? (fn) => requestIdleCallback(fn, { timeout: 300 })
+  : (fn) => setTimeout(() => fn({ timeRemaining: () => 10 }), 1);
+/** Runs work(item) for each item while the browser is idle, then done(). */
+function whenIdle(items, work, done) {
+  const queue = [...items];
+  const step = (deadline) => {
+    do {
+      const item = queue.shift();
+      if (item === undefined) break;
+      try { work(item, queue.length); } catch (err) { console.warn(err); }
+    } while (queue.length && deadline.timeRemaining() > 4);
+    if (queue.length) idleLater(step);
+    else done?.();
+  };
+  idleLater(step);
+}
+function buildBoundsTrees(done) {
+  if (window.__rteNoBvh) { done?.(); return; }   // tests compare hits with and without the index
   const geos = new Set();
   for (const e of elements) for (const m of e.meshes) if (m.geometry.index && m.geometry.index.count >= 96) geos.add(m.geometry);
   const queue = [...geos].sort((a, b) => b.index.count - a.index.count);   // the slowest to search first
   bvh.pending = queue.length;
-  const later = window.requestIdleCallback
-    ? (fn) => requestIdleCallback(fn, { timeout: 300 })
-    : (fn) => setTimeout(() => fn({ timeRemaining: () => 10 }), 1);
-  const step = (deadline) => {
-    do {
-      const g = queue.shift();
-      if (!g) break;
-      try {
-        g.boundsTree = new MeshBVH(g, { indirect: true });
-        bvh.built++;
-      } catch (err) {
-        console.warn('spatial index not built:', err);
-      }
-      bvh.pending = queue.length;
-    } while (queue.length && deadline.timeRemaining() > 4);
-    if (queue.length) later(step);
-  };
-  if (queue.length) later(step);
+  whenIdle(queue, (g, left) => {
+    g.boundsTree = new MeshBVH(g, { indirect: true });
+    bvh.built++;
+    bvh.pending = left;
+  }, () => { bvh.pending = 0; done?.(); });
+}
+
+// Lighter versions of the heaviest geometries, for drawing far away or while moving (lod.js);
+// made while the browser is idle, after the spatial index.
+const lod = { pending: 0, geometries: 0, done: false };
+async function buildLods() {
+  if (window.__rteNoLod || !(await lodReady())) { lod.done = true; return; }
+  const geos = new Set();
+  for (const e of elements) for (const m of e.meshes) if (m.geometry.index && m.geometry.index.count >= LOD_MIN_TRIANGLES * 3) geos.add(m.geometry);
+  const queue = [...geos].sort((a, b) => b.index.count - a.index.count);
+  const lods = new Map();
+  lod.pending = queue.length;
+  whenIdle(queue, (g, left) => {
+    const levels = simplifyGeometry(g);
+    if (levels.length) lods.set(g, levels);
+    lod.pending = left;
+  }, () => {
+    lod.pending = 0;
+    if (lods.size) lod.geometries = batches.addLods(lods);
+    lod.done = true;
+    invalidate(2);
+  });
 }
 
 const raycaster = new THREE.Raycaster();
@@ -2030,6 +2057,7 @@ renderer.setAnimationLoop((t) => {
   needsRender--;
   if (motion.active) adaptResolution(now);
   batches?.skipSmall(motion.active, camera, viewport.clientHeight);
+  batches?.chooseLods(camera, viewport.clientHeight, window.__rteLodPx ?? (motion.active ? 3 : 1));
   placePick();
   if (measure) {
     if (moved) measure.refresh();
@@ -2059,7 +2087,7 @@ window.viewer = {
   stats: () => ({
     frames: framesDrawn, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     pixelRatio: renderer.getPixelRatio(), geometries: renderer.info.memory.geometries,
-    bvh: { ...bvh }, batches: batches?.info ?? null,
+    bvh: { ...bvh }, lod: { ...lod }, batches: batches?.info ?? null,
   }),
   elements: () => elements.map((e) => ({
     id: e.d.id, category: e.d.category, link: e.d.link ?? null, match: e.match, shown: e.shown, ghost: e.ghost,
@@ -2096,6 +2124,8 @@ window.viewer = {
     kind: i.kind, d: i.d ?? null, delta: i.delta ?? null, at: i.at ?? null, origin: i.origin ?? null, info: i.info ?? null, shared: i.shared ?? null,
     points: i.anchors.map((a) => measure.revit(a)), text: measure.describe(i),
   })) : []),
+  /** Frames a box given in viewer space (corners min, max), without animation. */
+  fitBox(min, max) { fit(new THREE.Box3(new THREE.Vector3(...min), new THREE.Vector3(...max)), false); },
   /** Screen position (client px) of a point in viewer space, and the Revit coordinates of it. */
   project(p) {
     const v = new THREE.Vector3(...p).project(camera);

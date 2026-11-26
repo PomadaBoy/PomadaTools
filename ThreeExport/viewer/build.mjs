@@ -18,11 +18,12 @@ const outFile = path.resolve(process.argv[2] ??
 
 const template = fs.readFileSync(path.join(here, 'src', 'template.html'), 'utf8');
 // bundled libraries whose sources carry no licence comment: their MIT notice goes at the end
-const NOTICES = ['three-mesh-bvh'];
+const NOTICES = ['three-mesh-bvh', 'meshoptimizer'];
 const notices = NOTICES.map((pkg) => {
   const dir = path.join(here, 'node_modules', pkg);
   const { version } = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-  const text = fs.readFileSync(path.join(dir, 'LICENSE'), 'utf8').trim().replace(/\*\//g, '* /');
+  const file = ['LICENSE', 'LICENSE.md'].map((n) => path.join(dir, n)).find((p) => fs.existsSync(p));
+  const text = fs.readFileSync(file, 'utf8').trim().replace(/\*\//g, '* /');
   return `/*! ${pkg} ${version}\n${text}\n*/`;
 }).join('\n');
 const r = await esbuild.build({
