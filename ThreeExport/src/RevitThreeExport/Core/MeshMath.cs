@@ -1,7 +1,42 @@
 using System;
+using System.Collections.Generic;
 
 namespace RevitThreeExport.Core
 {
+    /// <summary>
+    /// Vertices of flat-shaded facets (one normal per facet): a corner that is the same Revit
+    /// point with the same normal (to 1e-6) as an earlier one reuses its vertex, instead of
+    /// three new vertices per facet. Positions are not changed, only shared.
+    /// </summary>
+    public sealed class FlatWelder
+    {
+        private readonly Dictionary<(int, long, long, long), int> _vertices = new Dictionary<(int, long, long, long), int>();
+        private readonly GlbPrimitive _prim;
+        private readonly double[] _points;
+        private readonly double _ox, _oy, _oz;
+
+        /// <param name="points">x, y, z per point, metres</param>
+        /// <param name="ox">subtracted from x (likewise oy, oz) when a vertex is written</param>
+        public FlatWelder(GlbPrimitive prim, double[] points, double ox, double oy, double oz)
+        {
+            _prim = prim;
+            _points = points;
+            _ox = ox; _oy = oy; _oz = oz;
+        }
+
+        /// <summary>The vertex for this point with this (unit) normal; added when new.</summary>
+        public int Vertex(int point, double nx, double ny, double nz)
+        {
+            var key = (point, (long)Math.Round(nx * 1e6), (long)Math.Round(ny * 1e6), (long)Math.Round(nz * 1e6));
+            if (_vertices.TryGetValue(key, out var v)) return v;
+            v = _prim.VertexCount;
+            _prim.Positions.Add((float)(_points[point * 3] - _ox), (float)(_points[point * 3 + 1] - _oy), (float)(_points[point * 3 + 2] - _oz));
+            _prim.Normals.Add((float)nx, (float)ny, (float)nz);
+            _vertices[key] = v;
+            return v;
+        }
+    }
+
     public static class MeshMath
     {
         /// <summary>

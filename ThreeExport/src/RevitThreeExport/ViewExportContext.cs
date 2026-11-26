@@ -385,19 +385,16 @@ namespace RevitThreeExport
 
             if (nrm != null && dist == DistributionOfNormals.OnEachFacet && normals.Count >= nFacets)
             {
-                // flat shading: three vertices of its own per facet
+                // flat shading: a vertex per point and facet normal (neighbouring facets in one
+                // plane share theirs)
+                var welder = new FlatWelder(prim, p, ox, oy, oz);
                 for (var f = 0; f < nFacets; f++)
                 {
                     var facet = facets[f];
                     int a = facet.V1, b = facet.V2, c = facet.V3;
-                    if (Flipped(p, a, b, c, nrm[f * 3], nrm[f * 3 + 1], nrm[f * 3 + 2])) { var s = b; b = c; c = s; }
-                    foreach (var v in new[] { a, b, c })
-                    {
-                        prim.Positions.Add((float)(p[v * 3] - ox), (float)(p[v * 3 + 1] - oy), (float)(p[v * 3 + 2] - oz));
-                        prim.Normals.Add((float)nrm[f * 3], (float)nrm[f * 3 + 1], (float)nrm[f * 3 + 2]);
-                    }
-                    var n0 = baseVertex + f * 3;
-                    prim.Indices.Add(n0, n0 + 1, n0 + 2);
+                    double nx = nrm[f * 3], ny = nrm[f * 3 + 1], nz = nrm[f * 3 + 2];
+                    if (Flipped(p, a, b, c, nx, ny, nz)) { var s = b; b = c; c = s; }
+                    prim.Indices.Add(welder.Vertex(a, nx, ny, nz), welder.Vertex(b, nx, ny, nz), welder.Vertex(c, nx, ny, nz));
                 }
                 rec.Triangles += nFacets;
                 return;

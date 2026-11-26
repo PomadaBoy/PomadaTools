@@ -116,6 +116,15 @@ namespace RevitThreeExport
                 throw;
             }
 
+            foreach (var x in records.Select(r => r.Rec).Where(r => r.Glb.TriangleCount > 0)
+                .OrderByDescending(r => r.Glb.TriangleCount).ThenBy(r => r.IdValue).Take(10))
+            {
+                result.Heaviest.Add(new HeavyElement
+                {
+                    Id = x.IdValue, Name = x.Glb.NodeName, Category = x.Glb.Category,
+                    Link = x.Frame.LinkName, Triangles = x.Glb.TriangleCount,
+                });
+            }
             result.Elements = stats.Elements;
             result.Triangles = stats.Triangles;
             result.Vertices = stats.Vertices;

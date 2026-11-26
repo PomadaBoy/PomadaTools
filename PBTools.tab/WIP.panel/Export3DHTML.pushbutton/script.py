@@ -105,6 +105,27 @@ def ask_path(cfg, view):
     return path
 
 
+def element_id(value):
+    try:
+        return DB.ElementId(System.Int64(value))   # Revit 2024+
+    except Exception:
+        return DB.ElementId(int(value))
+
+
+def print_heaviest(output, result):
+    """The elements with the most triangles: the ones to simplify or hide in Revit when the
+    file is big or slow. Host elements get a link that selects them."""
+    heavy = [h for h in result.Heaviest if h.Triangles >= 1000]
+    if not heavy or result.Triangles <= 0:
+        return
+    print(u"")
+    print(u"Elements with the most triangles (simplify or hide these to make the file smaller):")
+    for h in heavy:
+        share = 100.0 * h.Triangles / result.Triangles
+        where = u" (link {})".format(h.Link) if h.Link else u" " + output.linkify(element_id(h.Id))
+        print(u"  {:>10,}  {:4.1f} %  {}{}".format(h.Triangles, share, h.Name, where))
+
+
 def size_text(n):
     return "{:.1f} MB".format(n / 1048576.0) if n >= 1048576 else "{:.0f} KB".format(n / 1024.0)
 
@@ -159,6 +180,7 @@ def main():
     print(u", ".join(u"{} {}".format(c, per_category[c]) for c in cats))
     print(u"{} file ({} model), {:.1f} s".format(size_text(result.FileBytes), size_text(result.GlbBytes),
                                                  time.time() - started))
+    print_heaviest(output, result)
     for w in list(result.Warnings)[:20]:
         print(u"Warning: {}".format(w))
     if result.Elements == 0:

@@ -6,6 +6,17 @@ using System.Text;
 
 namespace RevitThreeExport
 {
+    /// <summary>An element with many triangles: worth simplifying or hiding in Revit.</summary>
+    public sealed class HeavyElement
+    {
+        public long Id;
+        public string Name;
+        public string Category;
+        /// <summary>The link it comes from, or null for the host model.</summary>
+        public string Link;
+        public int Triangles;
+    }
+
     public sealed class ExportResult
     {
         public bool Cancelled;
@@ -25,6 +36,8 @@ namespace RevitThreeExport
         public double[] SizeMetres = { 0, 0, 0 };
         public readonly Dictionary<string, int> PerCategory = new Dictionary<string, int>();
         public readonly List<string> Warnings = new List<string>();
+        /// <summary>The ten elements with the most triangles, most first.</summary>
+        public readonly List<HeavyElement> Heaviest = new List<HeavyElement>();
 
         public string Summary()
         {
