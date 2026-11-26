@@ -71,7 +71,7 @@ nothing. While the view moves on a slow computer it draws at a lower resolution,
 smaller than a pixel or two (bolts of a steel model seen whole) are left out until it stops.
 All elements are drawn in a few batched draw calls (a 28,000-element steel hall: 2 instead of
 28,000). Heavy meshes (rebar, swept railings, imported DWG) get lighter versions for drawing
-far away: at most 5 mm, 5 cm or 50 cm from the real surface, used only where that is under a
+far away (also parts repeated thousands of times): at most 5 mm, 5 cm or 50 cm from the real surface, used only where that is under a
 pixel on screen. Clicking, snapping and measuring always use the full geometry, so measured
 values never change. A spatial index makes clicks take a few milliseconds on any model.
 

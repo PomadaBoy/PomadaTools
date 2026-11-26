@@ -199,7 +199,8 @@ async function init() {
     }
     const e = {
       i: elements.length, obj: o, d: o.userData, text: searchText(o.userData), meshes: [],
-      box0: new THREE.Box3().setFromObject(o), orig: o.position.clone(),
+      // precise: a turned family instance's own box, turned, would be larger than the element
+      box0: new THREE.Box3().setFromObject(o, true), orig: o.position.clone(),
       offset: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(),
       match: true, shown: true, ghost: false,
     };
@@ -214,7 +215,9 @@ async function init() {
   batches = new Batches(scene, ghostMaterial);
   batches.build(meshes);
 
-  const box = new THREE.Box3().setFromObject(model);
+  const box = new THREE.Box3();
+  for (const e of elements) box.union(e.box0);
+  if (box.isEmpty()) box.setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
   modelRadius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 0.5);
   fillHeader(docInfo, size);
@@ -267,7 +270,7 @@ new MutationObserver(applyTheme).observe(document.documentElement, { attributes:
 /** Current bounds: for the model, the shown (not ghosted) elements where they are now. */
 function boundsOf(obj) {
   if (obj.isBox3) return obj.clone();
-  if (obj !== model) return new THREE.Box3().setFromObject(obj);
+  if (obj !== model) return byObject.has(obj) ? byObject.get(obj).box0.clone().translate(byObject.get(obj).offset) : new THREE.Box3().setFromObject(obj, true);
   const b = new THREE.Box3();
   for (const e of elements) if (e.shown && !e.ghost) b.union(e.box0.clone().translate(e.offset));
   if (b.isEmpty()) b.setFromObject(model);
@@ -391,9 +394,13 @@ function buildBoundsTrees(done) {
 const lod = { pending: 0, geometries: 0, done: false };
 async function buildLods() {
   if (window.__rteNoLod || !(await lodReady())) { lod.done = true; return; }
-  const geos = new Set();
-  for (const e of elements) for (const m of e.meshes) if (m.geometry.index && m.geometry.index.count >= LOD_MIN_TRIANGLES * 3) geos.add(m.geometry);
-  const queue = [...geos].sort((a, b) => b.index.count - a.index.count);
+  // what a geometry costs to draw: its triangles times the elements that share it
+  const drawn = new Map();
+  for (const e of elements) for (const m of e.meshes) {
+    if (m.geometry.index) drawn.set(m.geometry, (drawn.get(m.geometry) ?? 0) + m.geometry.index.count / 3);
+  }
+  const queue = [...drawn].filter(([g, n]) => n >= LOD_MIN_TRIANGLES && g.index.count >= 3 * 32)
+    .sort((a, b) => b[1] - a[1]).map(([g]) => g);
   const lods = new Map();
   lod.pending = queue.length;
   whenIdle(queue, (g, left) => {

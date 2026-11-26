@@ -9,7 +9,7 @@ import { MeshoptSimplifier } from 'meshoptimizer/simplifier';
 
 /** Largest distance (metres) between a lighter version and the real surface, finest first. */
 export const LOD_ERRORS = [0.005, 0.05, 0.5];
-/** Geometries with fewer triangles than this are drawn as they are. */
+/** Geometries drawn with fewer triangles than this (all their copies together) are drawn as they are. */
 export const LOD_MIN_TRIANGLES = 5000;
 
 /** Resolves true once the simplifier can be used (WebAssembly may be unavailable). */
