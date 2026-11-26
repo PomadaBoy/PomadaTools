@@ -29,6 +29,8 @@ const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').match
 // ---------- renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.info.autoReset = false;   // a frame is two passes (model, overlay): counted together
+let framesDrawn = 0;
 viewport.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -1914,12 +1916,14 @@ renderer.setAnimationLoop((now) => {
   moved = false;
   cuts.scaleHandles(camera, viewport.clientHeight);
   // the model with the cuts; then the grid, cut handles and measurements, uncut, on top
+  renderer.info.reset();
   renderer.clippingPlanes = cuts.planes;
   renderer.render(scene, camera);
   renderer.autoClear = false;
   renderer.clippingPlanes = noPlanes;
   renderer.render(overlay, camera);
   renderer.autoClear = true;
+  framesDrawn++;
 });
 
 // ---------- a small read-only API, for tests and the browser console ----------
@@ -1927,6 +1931,11 @@ let readyResolve;
 const ready = new Promise((r) => { readyResolve = r; });
 window.viewer = {
   ready,
+  /** Frames drawn so far, and the draw calls and triangles of the last one. */
+  stats: () => ({
+    frames: framesDrawn, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
+    pixelRatio: renderer.getPixelRatio(), geometries: renderer.info.memory.geometries,
+  }),
   elements: () => elements.map((e) => ({
     id: e.d.id, category: e.d.category, link: e.d.link ?? null, match: e.match, shown: e.shown, ghost: e.ghost,
     position: e.obj.position.toArray(), original: e.orig.toArray(),
