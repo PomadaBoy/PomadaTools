@@ -82,6 +82,16 @@
     letter-spacing: .01em; text-wrap: balance; margin-right: auto; min-width: 0;
   }
   #head p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; font-variant-numeric: tabular-nums; }
+  #head-more { display: grid; gap: 3px; }
+  #head.collapsed h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* the chevron that folds the model information away */
+  .disclose {
+    border: 0; background: none; padding: 0; width: 26px; height: 26px; margin: 0 -6px 0 -8px; flex: none;
+    display: grid; place-items: center; border-radius: 6px; color: var(--muted);
+  }
+  .disclose:hover { background: var(--well); color: var(--ink); }
+  .disclose svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+  .disclose[aria-expanded="false"] svg { transform: rotate(-90deg); }
   #hint {
     bottom: calc(var(--gap) + env(safe-area-inset-bottom, 0px));
     left: calc(var(--gap) + env(safe-area-inset-left, 0px));
@@ -131,7 +141,11 @@
   .idrow code { font: 600 14px var(--font-mono); margin-right: auto; }
   button { font: inherit; cursor: pointer; color: var(--ink); }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  button.ghost { border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: 3px 9px; font-size: 12px; }
+  button.ghost {
+    border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: 3px 9px; font-size: 12px;
+    display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  }
+  button.ghost svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   button.ghost:hover { border-color: var(--accent); color: var(--accent); }
   button.icon { border: 0; background: none; font-size: 22px; line-height: 1; color: var(--muted); padding: 0 4px; }
   button.icon:hover { color: var(--ink); }
@@ -175,7 +189,13 @@
     border: 0; background: none; border-radius: 7px; padding: 6px 10px; font-weight: 600; font-size: 12.5px;
     display: inline-flex; align-items: center; gap: 6px;
   }
-  .tool svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .tool svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  /* phones: icons only; the names stay for screen readers and as tooltips */
+  @media (max-width: 640px) {
+    .tool { position: relative; padding: 8px 10px; }
+    .tool svg { width: 19px; height: 19px; }
+    .tool .tl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  }
   .tool:hover { background: var(--well); }
   .tool[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
   .badge {
@@ -445,7 +465,7 @@
   .q-acts svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
   #q-more { padding: 6px 14px; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  @media (prefers-reduced-motion: reduce) { #status .bar i { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { #status .bar i, .disclose svg { transition: none; } }
   [hidden] { display: none !important; }
 </style>
 
@@ -453,11 +473,14 @@
 <div id="marks" aria-hidden="true"></div>
 <div id="head" class="card">
   <div class="row">
+    <button id="head-toggle" class="disclose" type="button" aria-expanded="true" aria-controls="head-more" title="Show or hide the model information" data-icon="chevron"><span class="sr">Model information</span></button>
     <h1 id="doc-title">__TITLE__</h1>
-    <button id="fit" class="ghost" type="button">Fit model</button>
+    <button id="fit" class="ghost" type="button" data-icon="fit" title="Fit the whole model in view (double-click)">Fit model</button>
   </div>
-  <p id="doc-meta"></p>
-  <p id="doc-cats"></p>
+  <div id="head-more">
+    <p id="doc-meta"></p>
+    <p id="doc-cats"></p>
+  </div>
 </div>
 <div id="hint" class="card">
   <span class="mouse">Click an element to inspect · drag to orbit · right-drag to pan · scroll to zoom · double-click to fit · <kbd>F</kbd> fit selection · <kbd>Esc</kbd> clear</span>
@@ -465,17 +488,17 @@
 </div>
 <div id="side" hidden>
   <div id="tools" class="card">
-    <button id="tb-explode" class="tool" type="button" aria-expanded="false" aria-controls="explode">Explode</button>
-    <button id="tb-filter" class="tool" type="button" aria-expanded="false" aria-controls="filter">Filter<span id="tb-filter-n" class="badge" hidden></span></button>
-    <button id="tb-colour" class="tool" type="button" aria-expanded="false" aria-controls="colour">Colour<span id="tb-colour-dot" class="cdot" hidden></span></button>
-    <button id="tb-measure" class="tool" type="button" aria-expanded="false" aria-controls="measure">Measure</button>
-    <button id="tb-qto" class="tool" type="button" aria-expanded="false" aria-controls="qto" title="Quantity take-off: a table of counts and totals">Quantities</button>
-    <button id="tb-download" class="tool" type="button" title="Download the 3D model as a .glb file" aria-label="Download .glb"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>.glb</button>
+    <button id="tb-explode" class="tool" type="button" aria-expanded="false" aria-controls="explode" data-icon="explode" title="Explode: move the elements apart"><span class="tl">Explode</span></button>
+    <button id="tb-filter" class="tool" type="button" aria-expanded="false" aria-controls="filter" data-icon="filter" title="Filter: find and show elements by their properties"><span class="tl">Filter</span><span id="tb-filter-n" class="badge" hidden></span></button>
+    <button id="tb-colour" class="tool" type="button" aria-expanded="false" aria-controls="colour" data-icon="colour" title="Colour by a parameter"><span class="tl">Colour</span><span id="tb-colour-dot" class="cdot" hidden></span></button>
+    <button id="tb-measure" class="tool" type="button" aria-expanded="false" aria-controls="measure" data-icon="measure" title="Measure distances and positions"><span class="tl">Measure</span></button>
+    <button id="tb-qto" class="tool" type="button" aria-expanded="false" aria-controls="qto" data-icon="table" title="Quantity take-off: a table of counts and totals"><span class="tl">Quantities</span></button>
+    <button id="tb-download" class="tool" type="button" data-icon="download" title="Download the 3D model as a .glb file" aria-label="Download .glb"><span class="tl">.glb</span></button>
   </div>
   <div id="vis" class="card" role="status" hidden>
     <span id="vis-text"></span>
-    <button id="vis-undo" class="ghost" type="button" title="Undo the last hide or isolate (Ctrl+Z)">Undo</button>
-    <button id="vis-all" class="ghost" type="button" title="Show all hidden elements (HR)">Show all</button>
+    <button id="vis-undo" class="ghost" type="button" data-icon="undo" title="Undo the last hide or isolate (Ctrl+Z)">Undo</button>
+    <button id="vis-all" class="ghost" type="button" data-icon="eye" title="Show all hidden elements (HR)">Show all</button>
   </div>
   <section id="cuts" class="card" aria-label="Cuts" hidden>
     <header class="f-head">
@@ -581,8 +604,8 @@
     <label class="q-check" title="One row per element instead of one per group"><input id="q-itemize" type="checkbox">Every element</label>
     <button id="q-setup" class="ghost" type="button" aria-expanded="true" aria-controls="q-bar" title="Show or hide grouping and columns">Columns</button>
     <span class="q-gap"></span>
-    <button id="q-xlsx" class="ghost" type="button" title="Download the table as an Excel workbook (.xlsx)">Excel</button>
-    <button id="q-csv" class="ghost" type="button" title="Download the table as a CSV file">CSV</button>
+    <button id="q-xlsx" class="ghost" type="button" data-icon="download" title="Download the table as an Excel workbook (.xlsx)">Excel</button>
+    <button id="q-csv" class="ghost" type="button" data-icon="download" title="Download the table as a CSV file">CSV</button>
     <button id="q-close" class="icon" type="button" title="Close" aria-label="Close quantities">×</button>
   </header>
   <div id="q-bar" class="q-bar">

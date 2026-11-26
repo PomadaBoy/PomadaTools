@@ -1127,3 +1127,48 @@ test('phone layout has no horizontal scroll', async () => {
   assert.ok(sw <= cw, `scrollWidth ${sw} > clientWidth ${cw}`);
   await page.close();
 });
+
+test('toolbar buttons have icons; phones show the icons only, on one row', async () => {
+  const { page, errors } = await open();
+  const tools = page.locator('#tools .tool');
+  const n = await tools.count();
+  assert.equal(n, 6);
+  for (let i = 0; i < n; i++) assert.equal(await tools.nth(i).locator('svg').count(), 1, `tool ${i} has an icon`);
+  assert.ok(await page.isVisible('#tb-filter .tl'), 'wide screens: labels shown');
+  for (const id of ['#fit', '#vis-undo', '#vis-all', '#q-xlsx', '#q-csv']) assert.equal(await page.locator(`${id} svg`).count(), 1, `${id} has an icon`);
+  assert.deepEqual(errors(), []);
+  await page.close();
+
+  const phone = (await open({ viewport: { width: 375, height: 812 } })).page;
+  const box = await phone.locator('#tools').boundingBox();
+  assert.ok(box.height < 56, `one row of tools: ${box.height}px`);
+  const label = await phone.locator('#tb-filter .tl').boundingBox();
+  assert.ok(label.width <= 1, 'phones: the label is only for screen readers');
+  // the names stay
+  for (const name of ['Explode', 'Filter', 'Colour', 'Measure', 'Quantities']) {
+    assert.equal(await phone.getByRole('button', { name, exact: true }).count(), 1, `button named ${name}`);
+  }
+  await phone.close();
+});
+
+test('model information folds away to the title, remembered; folded at first on phones', async () => {
+  const { page, errors } = await open();
+  assert.ok(await page.isVisible('#doc-meta'));
+  const top0 = (await page.locator('#tools').boundingBox()).y;
+  await page.click('#head-toggle');
+  assert.ok(await page.isHidden('#doc-meta'));
+  assert.equal(await page.getAttribute('#head-toggle', 'aria-expanded'), 'false');
+  await page.waitForFunction((y) => document.querySelector('#tools').getBoundingClientRect().y < y - 20, top0);
+  await page.reload();
+  assert.equal(await page.evaluate(() => window.viewer.ready), true);
+  assert.ok(await page.isHidden('#doc-meta'), 'remembered');
+  await page.click('#head-toggle');
+  assert.ok(await page.isVisible('#doc-meta'));
+  assert.deepEqual(errors(), []);
+  await page.close();
+
+  const phone = (await open({ viewport: { width: 375, height: 812 } })).page;
+  assert.ok(await phone.isHidden('#doc-meta'), 'phones: folded at first');
+  assert.equal(await phone.textContent('#doc-title'), 'Sintetički model');
+  await phone.close();
+});
