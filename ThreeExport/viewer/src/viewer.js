@@ -437,7 +437,9 @@ function firstHit(min = 0) {
     let o = hit.object;
     while (o && !byObject.has(o)) o = o.parent;
     const e = o && byObject.get(o);
-    if (e && e.shown && !e.ghost && cuts.isKept(hit.point)) {
+    // cuts apply where the element is drawn: exploded, while rays are cast in the model as built
+    const drawnAt = e && asBuiltRays ? hit.point.clone().add(e.offset) : hit.point;
+    if (e && e.shown && !e.ghost && cuts.isKept(drawnAt)) {
       // the face normal in world space, towards the viewer
       const normal = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : new THREE.Vector3(0, 1, 0);
       if (normal.dot(raycaster.ray.direction) > 0) normal.negate();
@@ -1387,9 +1389,32 @@ function meshCorners(mesh) {
  * - through the element: its thickness there;
  * - straight out: the clear distance to the next surface in front.
  */
+/**
+ * Runs fn with the model put back as built (no explode offsets) for picking: what the laser
+ * hits and how far, then as when nothing is exploded. Only the picked copy moves; what is
+ * drawn (the batches) stays exploded.
+ */
+let asBuiltRays = false;
+function asBuilt(fn) {
+  const moved = elements.filter((e) => e.offset.lengthSq() > 0);
+  if (!moved.length) return fn();
+  for (const e of moved) { e.obj.position.copy(e.orig); e.obj.updateMatrixWorld(true); }
+  asBuiltRays = true;
+  try {
+    return fn();
+  } finally {
+    asBuiltRays = false;
+    for (const e of moved) { e.obj.position.copy(e.orig).add(e.offset); e.obj.updateMatrixWorld(true); }
+  }
+}
+
 function laser(s) {
-  if (explode.f > 0) { mState.note = 'Reset Explode first: the laser measures the model as built.'; return; }
-  const P = s.hit.clone();
+  asBuilt(() => laserAsBuilt(s));
+}
+
+/** The laser, in the model as built (see asBuilt): s is the clicked surface, where it is drawn. */
+function laserAsBuilt(s) {
+  const P = s.hit.clone().sub(s.e.offset);   // the clicked point, as built
   const n = s.normal.clone().normalize();          // the face normal, towards the viewer
   const up = REVIT_AXES.Z;
   const flat = Math.abs(n.dot(up)) > 0.7;          // floors, decks, footings, roofs
@@ -1409,7 +1434,7 @@ function laser(s) {
     raycaster.far = Infinity;
     return h;
   };
-  const anchorAt = (p, e) => ({ e, local: p.clone().sub(e.offset) });
+  const anchorAt = (p, e) => ({ e, local: p.clone() });   // points as built are already local
   const origin = anchorAt(P, s.e);
   const beams = [];
 

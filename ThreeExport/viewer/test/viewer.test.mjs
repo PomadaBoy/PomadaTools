@@ -840,6 +840,43 @@ test('Measure: the laser measures along the clicked surface to its edges, its th
   await page.close();
 });
 
+test('Measure: the laser on an exploded model measures it as built', async () => {
+  const { page, errors } = await open();
+  const built = await els(page);
+  // the west wall, as in the laser test above: 25 cm thick, 3.70 m high, 9.50 m between columns
+  const westX = Math.min(...built.map((x) => x.box[0][0]));
+  const wallId = built.filter((e) => e.category === 'Walls' && Math.abs(e.box[0][0] - westX) < 1e-4)
+    .sort((p, q) => q.box[1][1] - p.box[1][1])[0].id;
+  await page.click('#tb-explode');
+  await page.locator('#explode-amount').fill('60');
+  await page.waitForTimeout(300);
+  assert.equal((await page.evaluate(() => window.viewer.state())).explode.amount, 0.6);
+  await page.click('#fit');
+  await page.waitForTimeout(500);
+  await page.click('#tb-measure');
+  await page.click('#m-mode [data-mode="laser"]');
+  // click the wall where it is drawn now, moved out by the explode
+  const wall = (await els(page)).find((e) => e.id === wallId);
+  assert.ok(Math.abs(wall.box[0][0] - westX) > 0.5, 'the wall has moved');
+  const face = [wall.box[0][0], (wall.box[0][1] + wall.box[1][1]) / 2, (wall.box[0][2] + wall.box[1][2]) / 2];
+  await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), face)));
+  const w = (await page.evaluate(() => window.viewer.measures())).filter((m) => m.kind === 'laser').at(-1);
+  assert.ok(w, 'the laser measures while exploded');
+  assert.ok(Math.abs(w.info.thickness - 0.25) < 1e-4, `wall thickness ${w.info.thickness}`);
+  assert.ok(Math.abs(w.info.along[1].span - 3.7) < 1e-4, `wall height ${w.info.along[1].span}`);
+  assert.ok(Math.abs(w.info.along[0].span - 9.5) < 1e-4, `between the columns, as built ${w.info.along[0].span}`);
+  assert.equal(w.info.clear, null);
+  // its start is on the wall as built (the Revit coordinates do not move with the explode)
+  const asBuilt = await page.evaluate((x) => window.viewer.toRevit([x, 0, 0])[0], westX);
+  assert.ok(Math.abs(w.origin[0] - asBuilt) < 1e-4, `origin x ${w.origin[0]} = ${asBuilt}`);
+  // picking still finds the exploded model afterwards
+  await page.click('#m-close');
+  await page.mouse.click(...(await page.evaluate((q) => window.viewer.project(q), face)));
+  assert.equal((await page.evaluate(() => window.viewer.state())).selected, wallId);
+  assert.deepEqual(errors(), []);
+  await page.close();
+});
+
 
 const overlap = (a, b) => a && b && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
