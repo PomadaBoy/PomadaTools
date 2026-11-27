@@ -1,0 +1,3 @@
+title: "Toggle\nRef Faces"
+tooltip: Hides all reference faces (made with Reference Faces) in the active view; click again to show them. Only the active view changes, the faces stay in the model.
+author: Slobodan Vesovic
