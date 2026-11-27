@@ -12,8 +12,6 @@ from pyrevit import forms, script
 from pyrevit.versionmgr import updater
 from pyrevit.loader import sessionmgr
 
-import pomadaroslyn
-
 output = script.get_output()
 
 
@@ -47,7 +45,9 @@ after = tip.Sha[:7]
 # changed extension on Reload. Compile every changed extension (PomadaRebar too)
 # here in a private context first; unchanged ones are cache hits. This also runs
 # when nothing new was pulled, so a failed Reload is fixed by clicking Sync again.
+# Imported here, after the pull, so a problem in the helper can never stop a sync.
 try:
+    import pomadaroslyn
     built = pomadaroslyn.prebuild_if_needed()
 except Exception as ex:
     built = ["Could not precompile extensions: {}".format(ex)]

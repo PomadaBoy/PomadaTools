@@ -12,7 +12,13 @@ import os
 
 from System import Activator, AppDomain, Array, Enum, Int32, Object
 from System.Collections.Generic import List
-from System.Runtime.Loader import AssemblyLoadContext
+
+try:
+    from System.Runtime.Loader import AssemblyLoadContext
+except ImportError:
+    # Revit 2024 and older run on .NET Framework, which has no load contexts.
+    # The clash is a .NET 8 (Revit 2025+) problem, so there is nothing to fix there.
+    AssemblyLoadContext = None
 
 from pyrevit import HOST_APP
 from pyrevit.userconfig import user_config
@@ -32,7 +38,9 @@ def _default_asm(name):
 
 def roslyn_clash():
     """Return (loaded, needed) Roslyn versions when they differ, else None."""
-    builder = _default_asm("pyRevitAssemblyBuilder")
+    if AssemblyLoadContext is None:
+        return None
+    builder =_default_asm("pyRevitAssemblyBuilder")
     loaded = _default_asm("Microsoft.CodeAnalysis")
     if builder is None or loaded is None:
         return None
